@@ -1,0 +1,48 @@
+{
+  "experiment_id": "hnsw_retrieval-seed42-20260710-164247",
+  "generated_at": "2026-07-10T16:44:15",
+  "tool": "benchmark_retrieval (ReelRank Phase 1)",
+  "git": {
+    "reel_rank_sha": "32a7f09cf9635e212ad8754e82b4b6cb92a7e34f",
+    "reel_rank_dir": "/Users/derranw/reel-rank",
+    "reel_rank_dirty": true,
+    "vector_db_sha": "17e434a3e741f702ffb8e0f00b0484676d988198",
+    "vector_db_dir": "/Users/derranw/reel-rank/../vector-db",
+    "note": "reel-rank SHA is the Phase 0 commit; Phase 1 work (this benchmark, the vindex adapters, the differential suite) is uncommitted, so the tree is dirty at benchmark time."
+  },
+  "build": {
+    "type": "Release",
+    "compiler": "AppleClang 21.0.0.21000101",
+    "cxx_standard": 20,
+    "release_flags": "-O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror"
+  },
+  "hardware": {
+    "cpu_model": "Apple M5",
+    "logical_cores": 10,
+    "physical_cores": 10,
+    "ram_bytes": 25769803776,
+    "ram_gib": 24.0
+  },
+  "os": {
+    "sysname": "Darwin",
+    "release": "25.5.0",
+    "version": "Darwin Kernel Version 25.5.0: Mon Apr 27 20:39:29 PDT 2026; root:xnu-12377.121.6~2/RELEASE_ARM64_T8142",
+    "machine": "arm64"
+  },
+  "execution": {
+    "threads_used": 1,
+    "note": "single-threaded benchmark (D13); logical_cores reported for provenance only"
+  },
+  "sweep": {
+    "seed": 42,
+    "dimensions": 64,
+    "vector_counts": [10000,100000],
+    "m_values": [8,16,32],
+    "ef_construction_fixed": 200,
+    "ef_search_values": [16,32,64,128,256],
+    "k_values": [10,50,200,500],
+    "num_queries": 200,
+    "total_sweep_wall_ms": 87159.2,
+    "subset_note": "Deliberate subset of the TDD 17.3 grid (per plan/01-PHASES-FOUNDATION.md Phase 1): efConstruction fixed at 200 (the rr::HNSWConfig default) rather than swept over {50,100,200,400}; dimensions fixed at 64 (of {32,64,128,256}); vector counts {10000,100000} with the 1,000,000 case deferred to Phase 11. M x efSearch x k are swept fully."
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "experiment_id": "hnsw_retrieval-seed42-20260710-164247",
+  "total_sweep_wall_ms": 87159.2,
+  "total_rows": 120,
+  "per_size": [
+    {
+      "vector_count": 10000,
+      "recall_at_10_min": 0.2435,
+      "recall_at_10_max": 1.0000,
+      "query_p50_ms_min": 0.010084,
+      "query_p50_ms_max": 0.329688,
+      "insert_throughput_min": 6346.0,
+      "insert_throughput_max": 12106.7,
+      "per_m": [
+        {
+          "m": 8,
+          "build_time_ms": 826.0,
+          "insert_throughput_per_sec": 12106.7,
+          "max_graph_level": 5,
+          "memory_delta_mb": 7.4,
+          "recall_at_10_ef16": 0.2435,
+          "recall_at_10_ef256": 0.9240
+        },
+        {
+          "m": 16,
+          "build_time_ms": 1114.8,
+          "insert_throughput_per_sec": 8970.0,
+          "max_graph_level": 3,
+          "memory_delta_mb": 2.5,
+          "recall_at_10_ef16": 0.4595,
+          "recall_at_10_ef256": 0.9945
+        },
+        {
+          "m": 32,
+          "build_time_ms": 1575.8,
+          "insert_throughput_per_sec": 6346.0,
+          "max_graph_level": 2,
+          "memory_delta_mb": 4.9,
+          "recall_at_10_ef16": 0.6705,
+          "recall_at_10_ef256": 1.0000
+        }
+      ]
+    },
+    {
+      "vector_count": 100000,
+      "recall_at_10_min": 0.0630,
+      "recall_at_10_max": 0.9730,
+      "query_p50_ms_min": 0.021229,
+      "query_p50_ms_max": 1.325645,
+      "insert_throughput_min": 2629.5,
+      "insert_throughput_max": 6931.4,
+      "per_m": [
+        {
+          "m": 8,
+          "build_time_ms": 14427.0,
+          "insert_throughput_per_sec": 6931.4,
+          "max_graph_level": 5,
+          "memory_delta_mb": 54.4,
+          "recall_at_10_ef16": 0.0630,
+          "recall_at_10_ef256": 0.5280
+        },
+        {
+          "m": 16,
+          "build_time_ms": 22493.6,
+          "insert_throughput_per_sec": 4445.7,
+          "max_graph_level": 4,
+          "memory_delta_mb": 30.7,
+          "recall_at_10_ef16": 0.1755,
+          "recall_at_10_ef256": 0.8370
+        },
+        {
+          "m": 32,
+          "build_time_ms": 38030.5,
+          "insert_throughput_per_sec": 2629.5,
+          "max_graph_level": 3,
+          "memory_delta_mb": 41.2,
+          "recall_at_10_ef16": 0.3430,
+          "recall_at_10_ef256": 0.9730
+        }
+      ]
+    }
+  ]
+}

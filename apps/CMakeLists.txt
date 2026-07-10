@@ -1,0 +1,17 @@
+# Performance/benchmark executables (design decision D7: never unit tests, excluded from
+# ctest). Phase 1 adds benchmark_retrieval.
+
+# benchmark_retrieval — HNSW-vs-exact retrieval sweep (Phase 1, task 4).
+# Links only rr_vindex (which PUBLIC-links rr_core + nlohmann_json). D2 containment: this target
+# does NOT link vector_db::vdb_core and includes no vector-db header — everything is reached
+# through the rr:: VectorIndex adapters.
+add_executable(benchmark_retrieval benchmark_retrieval.cpp)
+target_link_libraries(benchmark_retrieval PRIVATE rr_vindex rr_warnings)
+
+# Provenance/build facts baked in for metadata.json (see benchmark_retrieval.cpp).
+target_compile_definitions(benchmark_retrieval PRIVATE
+    RR_REPO_DIR="${CMAKE_SOURCE_DIR}"
+    RR_VDB_DIR="${REELRANK_VDB_DIR}"
+    RR_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+    RR_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
+)

@@ -1,0 +1,15 @@
+{
+  "experiment_id": "hnsw_retrieval-seed42-20260710-164247",
+  "name": "hnsw_retrieval",
+  "seed": 42,
+  "dimensions": 64,
+  "vector_counts": [10000,100000],
+  "m_values": [8,16,32],
+  "ef_construction_fixed": 200,
+  "ef_search_values": [16,32,64,128,256],
+  "k_values": [10,50,200,500],
+  "num_queries": 200,
+  "warmup_queries": 10,
+  "distance_metric": "euclidean_on_unit_vectors (cosine-equivalent, D3)",
+  "embedding_generation": "gaussian-per-component, L2-normalized (D8 rr::Rng)"
+}

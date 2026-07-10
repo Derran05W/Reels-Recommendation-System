@@ -51,5 +51,18 @@ target_include_directories(rr_core PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(rr_core PUBLIC nlohmann_json::nlohmann_json)
 target_link_libraries(rr_core PRIVATE rr_warnings)
 
+# --- rr_vindex: VectorIndex implementations (Phase 1). D2 containment: vector-db headers are
+# confined to src/vindex/*.cpp; the public headers under include/rr/vindex/ expose only rr::
+# types, so vdb_core can stay a PRIVATE link here. -------------------------------------------
+add_library(rr_vindex STATIC
+    src/vindex/exact_vector_index.cpp
+    src/vindex/hnsw_vector_index.cpp
+)
+target_include_directories(rr_vindex PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(rr_vindex PUBLIC rr_core)
+target_link_libraries(rr_vindex PRIVATE vector_db::vdb_core rr_warnings)
+
+add_subdirectory(apps)
+
 enable_testing()
 add_subdirectory(tests)

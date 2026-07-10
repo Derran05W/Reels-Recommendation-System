@@ -62,6 +62,13 @@ target_include_directories(rr_vindex PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(rr_vindex PUBLIC rr_core)
 target_link_libraries(rr_vindex PRIVATE vector_db::vdb_core rr_warnings)
 
+# --- rr_simulation: synthetic domain generation (Phase 2). Never includes vector-db. ---------
+file(GLOB RR_SIMULATION_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/simulation/*.cpp)
+add_library(rr_simulation STATIC ${RR_SIMULATION_SOURCES})
+target_include_directories(rr_simulation PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(rr_simulation PUBLIC rr_core)
+target_link_libraries(rr_simulation PRIVATE rr_warnings)
+
 add_subdirectory(apps)
 
 enable_testing()

@@ -15,3 +15,9 @@ target_compile_definitions(benchmark_retrieval PRIVATE
     RR_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
     RR_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
 )
+
+# inspect_user — dumps topic/creator/reel/user distribution summaries as JSON (Phase 2, task 7).
+# Links rr_simulation (which PUBLIC-links rr_core, carrying nlohmann_json transitively). No
+# vector-db dependency at all.
+add_executable(inspect_user inspect_user.cpp)
+target_link_libraries(inspect_user PRIVATE rr_simulation rr_warnings)

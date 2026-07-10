@@ -3,6 +3,7 @@ file(GLOB RR_TEST_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/unit/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/integration/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/differential/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/property/*.cpp
 )
 
 add_executable(reel_rank_tests ${RR_TEST_SOURCES})
@@ -10,6 +11,7 @@ target_link_libraries(reel_rank_tests
     PRIVATE
         rr_core
         rr_vindex
+        rr_simulation
         vector_db::vdb_core   # needed only by the vdb link-sanity TU
         GTest::gtest_main
         rr_warnings

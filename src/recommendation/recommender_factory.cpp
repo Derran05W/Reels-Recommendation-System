@@ -1,0 +1,68 @@
+#include "rr/recommendation/recommender_factory.hpp"
+
+#include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+#include "rr/recommendation/exact_vector_recommender.hpp"
+#include "rr/recommendation/popularity_recommender.hpp"
+#include "rr/recommendation/random_recommender.hpp"
+
+namespace rr {
+
+namespace {
+
+// Every baseline looks the user/reel up by id used directly as a vector index (deps.users[i],
+// deps.reels[i]), so the dense-id invariant is load-bearing. Validate it here at construction
+// (setup, so throwing is allowed by D10) rather than risk a silent out-of-bounds on the hot path.
+void validateDenseIds(const RecommenderDeps &deps) {
+    for (std::size_t i = 0; i < deps.reels.size(); ++i) {
+        if (deps.reels[i].id.value != i) {
+            throw std::invalid_argument("makeRecommender: reels are not densely indexed; reels[" +
+                                        std::to_string(i) +
+                                        "].id.value == " + std::to_string(deps.reels[i].id.value));
+        }
+    }
+    for (std::size_t i = 0; i < deps.users.size(); ++i) {
+        if (deps.users[i].id.value != i) {
+            throw std::invalid_argument("makeRecommender: users are not densely indexed; users[" +
+                                        std::to_string(i) +
+                                        "].id.value == " + std::to_string(deps.users[i].id.value));
+        }
+    }
+}
+
+// The HNSW-based algorithms are not part of Phase 4 (baselines only). Name the algorithm and the
+// phase that delivers it so a misconfigured experiment fails loudly.
+[[noreturn]] void throwUnimplemented(RecommendationAlgorithm algorithm, int phase) {
+    throw std::invalid_argument(std::string("makeRecommender: algorithm '") + toString(algorithm) +
+                                "' is not available in Phase 4; it is delivered in Phase " +
+                                std::to_string(phase));
+}
+
+} // namespace
+
+std::unique_ptr<Recommender> makeRecommender(RecommendationAlgorithm algorithm,
+                                             const RecommenderDeps &deps, Rng rng) {
+    validateDenseIds(deps);
+    switch (algorithm) {
+    case RecommendationAlgorithm::Random:
+        return std::make_unique<RandomRecommender>(deps, std::move(rng));
+    case RecommendationAlgorithm::Popularity:
+        return std::make_unique<PopularityRecommender>(deps, std::move(rng));
+    case RecommendationAlgorithm::ExactVector:
+        return std::make_unique<ExactVectorRecommender>(deps, std::move(rng));
+    case RecommendationAlgorithm::Hnsw:
+        throwUnimplemented(algorithm, 5); // HNSW retrieval in the loop
+    case RecommendationAlgorithm::HnswRanker:
+        throwUnimplemented(algorithm, 6); // learned ranking
+    case RecommendationAlgorithm::HnswRankerExploration:
+        throwUnimplemented(algorithm, 8); // epsilon-greedy exploration
+    case RecommendationAlgorithm::HnswRankerDiversity:
+        throwUnimplemented(algorithm, 9); // diversity reranking
+    }
+    throw std::invalid_argument("makeRecommender: unknown RecommendationAlgorithm value");
+}
+
+} // namespace rr

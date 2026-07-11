@@ -46,5 +46,8 @@
     "max_per_creator": 2,
     "max_per_topic": 3,
     "mmr_lambda": 0.75
+  },
+  "evaluation": {
+    "oracle_sample_rate": 0.25
   }
 }

@@ -1,0 +1,48 @@
+{
+  "algorithm": "random",
+  "counts": {
+    "impressions": 50000,
+    "reels": 10000,
+    "requests": 5000,
+    "rounds": 5,
+    "sessions": 3429,
+    "users": 1000
+  },
+  "experiment_id": "random-seed42-20260711T003653",
+  "metrics": {
+    "completion_rate": 0.2681,
+    "follow_rate": 0.00708,
+    "instant_skip_rate": 0.60816,
+    "like_rate": 0.05028,
+    "mean_session_length": 14.581510644502771,
+    "mean_true_affinity": 0.04507282359409091,
+    "mean_watch_ratio": 0.30246223093548297,
+    "mean_watch_seconds": 11.598600857928002,
+    "reward_per_impression": -0.024934603359125614,
+    "reward_per_session": -0.36358418429754463,
+    "share_rate": 0.0188
+  },
+  "notes": {
+    "baseline_flags": "Baseline requests set enableExploration=false and enableDiversity=false; candidateLimit = recommendation.vectorCandidates; requestTime = simulator logical clock; sessionId = the most recent interaction's session (SessionId{0} before any interaction).",
+    "static_estimates": "Baselines run with STATIC cold-start estimated preferences (TDD 11.1): every user's estimatedPreference is the global-average hidden preference and there are no online updates until Phase 7. Reported metrics therefore reflect fixed, non-personalized-per-user estimates; a flat learning curve is expected."
+  },
+  "oracle": {
+    "cumulative_regret": 883.4360771583492,
+    "mean_regret": 0.7016966458763695,
+    "regret_units_note": "Regret is measured in TRUE-AFFINITY units, not reward units: simulating counterfactual oracle interactions would consume behaviour rng draws and perturb determinism (D8), so the oracle compares mean true affinity of its exhaustive top-k against the recommended feed. Affinity is the monotone core of the reward (TDD 10.1/10.5).",
+    "sample_rate": 0.25,
+    "sampled_requests": 1259
+  },
+  "seed": 42,
+  "timing": {
+    "recommend_latency_ms": {
+      "max": 0.077333,
+      "mean": 0.018479047199999887,
+      "p50": 0.019291,
+      "p95": 0.021792,
+      "p99": 0.025376660000000037,
+      "samples": 5000
+    },
+    "total_wall_seconds": 0.7296592500000001
+  }
+}

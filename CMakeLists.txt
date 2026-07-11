@@ -72,6 +72,25 @@ target_include_directories(rr_simulation PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(rr_simulation PUBLIC rr_core)
 target_link_libraries(rr_simulation PRIVATE rr_warnings)
 
+# --- rr_recommend: baseline recommenders (Phase 4). Reaches vectors only through the rr::
+# VectorIndex adapters (rr_vindex) — never includes vector-db (D2). ---------------------------
+file(GLOB RR_RECOMMEND_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_SOURCE_DIR}/src/recommendation/*.cpp)
+add_library(rr_recommend STATIC ${RR_RECOMMEND_SOURCES})
+target_include_directories(rr_recommend PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(rr_recommend PUBLIC rr_vindex)
+target_link_libraries(rr_recommend PRIVATE rr_warnings)
+
+# --- rr_evaluation: experiment runner, metrics, oracle regret, results writer (Phase 4). The
+# only library allowed to read HiddenUserState outside the simulator (TDD 18.2 evaluation
+# carve-out). ---------------------------------------------------------------------------------
+file(GLOB RR_EVALUATION_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_SOURCE_DIR}/src/evaluation/*.cpp)
+add_library(rr_evaluation STATIC ${RR_EVALUATION_SOURCES})
+target_include_directories(rr_evaluation PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(rr_evaluation PUBLIC rr_recommend rr_simulation)
+target_link_libraries(rr_evaluation PRIVATE rr_warnings)
+
 add_subdirectory(apps)
 
 enable_testing()

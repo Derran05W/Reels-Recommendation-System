@@ -37,6 +37,10 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config ${{ matrix.build_type }} --output-on-failure
 
+      # D14: tiny end-to-end simulate run in CI from Phase 4 onward.
+      - name: Smoke simulate
+        run: ./build/apps/simulate --smoke --out smoke-results
+
   format:
     name: clang-format
     runs-on: ubuntu-latest

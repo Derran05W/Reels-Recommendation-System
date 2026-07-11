@@ -105,6 +105,14 @@ struct DiversityConfig {
     bool operator==(const DiversityConfig &) const = default;
 };
 
+// Evaluation-harness parameters (TDD 19 / phase-4 task 5). The oracle exhaustively scores all
+// reels by true hidden affinity, so it runs only on a Bernoulli-sampled subset of requests; the
+// rate is config-driven and recorded in every experiment's output.
+struct EvaluationConfig {
+    double oracleSampleRate = 0.05;
+    bool operator==(const EvaluationConfig &) const = default;
+};
+
 // TDD 16.1-16.7.
 enum class RecommendationAlgorithm {
     Random,
@@ -127,6 +135,7 @@ struct ExperimentConfig {
     DiversityConfig diversity;
     BehaviourConfig behaviour;
     RewardConfig reward;
+    EvaluationConfig evaluation;
     bool operator==(const ExperimentConfig &) const = default;
 };
 
@@ -149,6 +158,8 @@ void to_json(nlohmann::json &j, const BehaviourConfig &c);
 void from_json(const nlohmann::json &j, BehaviourConfig &c);
 void to_json(nlohmann::json &j, const RewardConfig &c);
 void from_json(const nlohmann::json &j, RewardConfig &c);
+void to_json(nlohmann::json &j, const EvaluationConfig &c);
+void from_json(const nlohmann::json &j, EvaluationConfig &c);
 void to_json(nlohmann::json &j, const RecommendationAlgorithm &a);
 void from_json(const nlohmann::json &j, RecommendationAlgorithm &a);
 void to_json(nlohmann::json &j, const ExperimentConfig &c);

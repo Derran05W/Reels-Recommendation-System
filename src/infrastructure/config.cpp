@@ -213,6 +213,15 @@ void from_json(const json &j, RewardConfig &c) {
     readKey(j, "not_interested_penalty", c.notInterestedPenalty);
 }
 
+void to_json(json &j, const EvaluationConfig &c) {
+    j = json{{"oracle_sample_rate", c.oracleSampleRate}};
+}
+
+void from_json(const json &j, EvaluationConfig &c) {
+    ensureKnownKeys(j, "evaluation", {"oracle_sample_rate"});
+    readKey(j, "oracle_sample_rate", c.oracleSampleRate);
+}
+
 const char *toString(RecommendationAlgorithm a) {
     switch (a) {
     case RecommendationAlgorithm::Random:
@@ -277,13 +286,14 @@ void to_json(json &j, const ExperimentConfig &c) {
              {"exploration", c.exploration},
              {"diversity", c.diversity},
              {"behaviour", c.behaviour},
-             {"reward", c.reward}};
+             {"reward", c.reward},
+             {"evaluation", c.evaluation}};
 }
 
 void from_json(const json &j, ExperimentConfig &c) {
     ensureKnownKeys(j, "<top-level>",
                     {"simulation", "recommendation", "algorithm", "hnsw", "ranking", "learning",
-                     "exploration", "diversity", "behaviour", "reward"});
+                     "exploration", "diversity", "behaviour", "reward", "evaluation"});
     readKey(j, "simulation", c.simulation);
     readKey(j, "recommendation", c.recommendation);
     readKey(j, "algorithm", c.algorithm);
@@ -294,6 +304,7 @@ void from_json(const json &j, ExperimentConfig &c) {
     readKey(j, "diversity", c.diversity);
     readKey(j, "behaviour", c.behaviour);
     readKey(j, "reward", c.reward);
+    readKey(j, "evaluation", c.evaluation);
 }
 
 ExperimentConfig loadExperimentConfig(const std::filesystem::path &path) {

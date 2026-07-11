@@ -1,0 +1,48 @@
+{
+  "algorithm": "popularity",
+  "counts": {
+    "impressions": 50000,
+    "reels": 10000,
+    "requests": 5000,
+    "rounds": 5,
+    "sessions": 3409,
+    "users": 1000
+  },
+  "experiment_id": "popularity-seed42-20260711T003654",
+  "metrics": {
+    "completion_rate": 0.3246,
+    "follow_rate": 0.00806,
+    "instant_skip_rate": 0.55466,
+    "like_rate": 0.05904,
+    "mean_session_length": 14.667057788207686,
+    "mean_true_affinity": 0.05355217389761717,
+    "mean_watch_ratio": 0.35689252802738775,
+    "mean_watch_seconds": 8.48879687806517,
+    "reward_per_impression": 0.015335445581003805,
+    "reward_per_session": 0.224925866544497,
+    "share_rate": 0.0218
+  },
+  "notes": {
+    "baseline_flags": "Baseline requests set enableExploration=false and enableDiversity=false; candidateLimit = recommendation.vectorCandidates; requestTime = simulator logical clock; sessionId = the most recent interaction's session (SessionId{0} before any interaction).",
+    "static_estimates": "Baselines run with STATIC cold-start estimated preferences (TDD 11.1): every user's estimatedPreference is the global-average hidden preference and there are no online updates until Phase 7. Reported metrics therefore reflect fixed, non-personalized-per-user estimates; a flat learning curve is expected."
+  },
+  "oracle": {
+    "cumulative_regret": 871.3481544057637,
+    "mean_regret": 0.6920954363826558,
+    "regret_units_note": "Regret is measured in TRUE-AFFINITY units, not reward units: simulating counterfactual oracle interactions would consume behaviour rng draws and perturb determinism (D8), so the oracle compares mean true affinity of its exhaustive top-k against the recommended feed. Affinity is the monotone core of the reward (TDD 10.1/10.5).",
+    "sample_rate": 0.25,
+    "sampled_requests": 1259
+  },
+  "seed": 42,
+  "timing": {
+    "recommend_latency_ms": {
+      "max": 0.176375,
+      "mean": 0.1212494562000001,
+      "p50": 0.12106249999999999,
+      "p95": 0.146917,
+      "p99": 0.15650042,
+      "samples": 5000
+    },
+    "total_wall_seconds": 1.21637975
+  }
+}

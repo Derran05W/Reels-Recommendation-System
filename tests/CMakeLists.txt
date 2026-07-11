@@ -12,6 +12,8 @@ target_link_libraries(reel_rank_tests
         rr_core
         rr_vindex
         rr_simulation
+        rr_recommend
+        rr_evaluation
         vector_db::vdb_core   # needed only by the vdb link-sanity TU
         GTest::gtest_main
         rr_warnings

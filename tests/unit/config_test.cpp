@@ -104,6 +104,24 @@ TEST(ConfigTest, UnknownNestedKeyThrows) {
     }
 }
 
+TEST(ConfigTest, EvaluationBlockParsesAndRejectsUnknownKeys) {
+    EXPECT_DOUBLE_EQ(ExperimentConfig{}.evaluation.oracleSampleRate, 0.05);
+
+    json j = {{"evaluation", {{"oracle_sample_rate", 0.25}}}};
+    auto c = j.get<ExperimentConfig>();
+    EXPECT_DOUBLE_EQ(c.evaluation.oracleSampleRate, 0.25);
+
+    json bad = {{"evaluation", {{"oracle_rate", 0.25}}}};
+    try {
+        bad.get<ExperimentConfig>();
+        FAIL() << "expected throw";
+    } catch (const std::invalid_argument &e) {
+        std::string msg = e.what();
+        EXPECT_NE(msg.find("oracle_rate"), std::string::npos);
+        EXPECT_NE(msg.find("evaluation"), std::string::npos);
+    }
+}
+
 TEST(ConfigTest, RoundTrip) {
     ExperimentConfig c;
     c.simulation.seed = 99;

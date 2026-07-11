@@ -1,0 +1,23 @@
+#pragma once
+
+#include <vector>
+
+#include "rr/core/embedding.hpp"
+#include "rr/domain/hidden_user_state.hpp"
+#include "rr/domain/user.hpp"
+
+namespace rr {
+
+// TDD 11.1 cold-start prior: the normalized mean of the population's ground-truth preferences.
+// This is evaluation/setup-side hidden-state access (TDD 18.2's carve-out): the aggregate stands
+// in for the platform-wide average *learned* preference a real system would observe; individual
+// hidden vectors never reach a recommender (D11). Throws std::invalid_argument if `hidden` is
+// empty or the mean has no direction.
+Embedding globalAveragePreference(const std::vector<HiddenUserState> &hidden);
+
+// Apply the cold-start prior to every user: estimatedPreference, longTermPreference, and
+// sessionPreference all start at `prior` (no online updates until Phase 7 — baselines run with
+// static estimates, recorded as such in experiment output).
+void applyColdStart(std::vector<User> &users, const Embedding &prior);
+
+} // namespace rr

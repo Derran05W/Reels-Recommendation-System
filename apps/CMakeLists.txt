@@ -21,3 +21,15 @@ target_compile_definitions(benchmark_retrieval PRIVATE
 # vector-db dependency at all.
 add_executable(inspect_user inspect_user.cpp)
 target_link_libraries(inspect_user PRIVATE rr_simulation rr_warnings)
+
+# simulate — end-to-end evaluation harness CLI (Phase 4, task 6). Links rr_evaluation (which
+# PUBLIC-links rr_recommend + rr_simulation). D2 containment holds: no vector-db header here —
+# vectors are reached through the rr:: adapters. Provenance/build facts baked in for metadata.json.
+add_executable(simulate simulate.cpp)
+target_link_libraries(simulate PRIVATE rr_evaluation rr_warnings)
+target_compile_definitions(simulate PRIVATE
+    RR_REPO_DIR="${CMAKE_SOURCE_DIR}"
+    RR_VDB_DIR="${REELRANK_VDB_DIR}"
+    RR_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+    RR_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
+)

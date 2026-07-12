@@ -22,6 +22,16 @@ ExactVectorRecommender::ExactVectorRecommender(const RecommenderDeps &deps, Rng 
     }
 }
 
+void ExactVectorRecommender::onReelsAppended(size_t firstNewIndex) {
+    // Same eligibility rule as the constructor: appended reels are indexed once, insert-only (D2).
+    for (size_t i = firstNewIndex; i < reels_.size(); ++i) {
+        const Reel &reel = reels_[i];
+        if (reel.active) {
+            index_.insert(reel.id, reel.embedding);
+        }
+    }
+}
+
 void ExactVectorRecommender::appendEligible(const std::vector<VectorSearchResult> &results,
                                             const User &user, std::size_t feedSize,
                                             RecommendationResponse &response) const {

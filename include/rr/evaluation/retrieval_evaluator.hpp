@@ -51,6 +51,12 @@ class RetrievalEvaluator {
 
     std::size_t groundTruthSize() const { return ground_.size(); }
 
+    // Grow the ground truth after a mid-simulation reel injection (Phase 8, TDD 18.5): insert every
+    // ACTIVE reel in `reels[firstNewIndex .. end)` into the exact index (same eligibility rule as
+    // the constructor; insert-only, D2 immutability). Keeps live Recall@K honest against a grown
+    // catalog. Deterministic and rng-free, like the constructor.
+    void appendReels(const std::vector<Reel> &reels, std::size_t firstNewIndex);
+
     // Compare one ANN search against exact ground truth for `query`.
     RetrievalSample evaluate(const VectorIndex &annIndex, const Embedding &query) const;
 

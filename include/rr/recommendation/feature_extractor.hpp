@@ -22,7 +22,7 @@ struct FeatureVector {
     float popularity;      // pool min-max of smoothedPopularity
     float trending;        // raw / (raw + 1) saturation of trendingScore
     float creatorAffinity; // user.creatorAffinity lookup (absent => 0)
-    float exploration;     // constant 0.0 until Phase 8
+    float exploration;     // 1.0 iff representative source == Exploration, else 0.0 (Phase 8)
     float durationMatch;   // 1 - |candDuration - preferredDuration| / durationRange
     float repetition;      // fraction of recent window sharing creator/topic (penalty magnitude)
     float impressionCount; // log-normalized global impressionCount (fatigue penalty magnitude)

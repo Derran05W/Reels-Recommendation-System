@@ -34,6 +34,10 @@ class ExactVectorRecommender final : public Recommender {
     // error — a wiring self-check. Never used on the recommendation path itself.
     const VectorIndex *retrievalIndex() const override;
 
+    // Inserts appended ACTIVE reels into the exact index (same rule as the constructor; D2
+    // insert-only).
+    void onReelsAppended(size_t firstNewIndex) override;
+
   private:
     // Walk `results` in ascending-distance order, emit the eligible ones (active + unseen) as
     // ranked reels until feedSize is reached, assigning rank 0..n-1 and score = cosine similarity.

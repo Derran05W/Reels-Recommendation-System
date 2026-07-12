@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <ctime>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -31,6 +34,12 @@
 namespace rr {
 
 namespace {
+
+// Cold-start tracking window (TDD 18.5): the harness measures per-injected-user reward and oracle
+// regret for a new user's first kColdStartMaxImpressions impressions (indices [0, 100)), which
+// covers every reported window (first 10/25/50/100). A named constant, NOT a config knob: the TDD
+// fixes these windows, so there is nothing to tune on the config surface.
+constexpr std::size_t kColdStartMaxImpressions = 100;
 
 // yyyymmddThhmmss experiment-id stamp (D12). Wall-clock is permitted here: this labels the output
 // directory for provenance and never feeds the simulation (D9).
@@ -63,7 +72,12 @@ ExperimentResult ExperimentRunner::run() {
     //    global-average hidden preference. From here they either stay frozen (learning disabled) or
     //    update online after every interaction (Phase 7).
     GeneratedDataset ds = generateDataset(config_.simulation, seed);
-    applyColdStart(ds.users, globalAveragePreference(ds.hiddenStates));
+    // Cold-start prior FROZEN at run start (TDD 11.1): the global-average hidden preference
+    // computed ONCE here, before the round loop. Mid-simulation injected users (Phase 8) are
+    // initialized to this SAME prior, so injection TIMING never silently changes the prior a cold
+    // user starts from.
+    const Embedding coldStartPrior = globalAveragePreference(ds.hiddenStates);
+    applyColdStart(ds.users, coldStartPrior);
 
     // Online preference learning (Phase 7, TDD 8.3/11.2/11.3). Constructed ONCE over the immutable
     // reel catalog; apply() runs after each Simulator::step below. It consumes no rng/clock, so
@@ -131,7 +145,73 @@ ExperimentResult ExperimentRunner::run() {
     size_t requestCount = 0;
     size_t impressionCount = 0;
 
+    // --- Phase 8 mid-simulation injection state (TDD 18.5) --------------------------------------
+    // Injection is "configured" when either count > 0. When it is NOT configured every branch below
+    // is inert, so the run is byte-identical to a pre-Phase-8 run (the regression contract).
+    const uint32_t newReels = config_.simulation.newReels;
+    const uint32_t newReelsAt = config_.simulation.newReelsAt;
+    const uint32_t newUsers = config_.simulation.newUsers;
+    const uint32_t newUsersAt = config_.simulation.newUsersAt;
+    const bool injectionConfigured = (newReels > 0) || (newUsers > 0);
+
+    // First dense index of each injected block once injected (kNone until then, and forever when
+    // that entity type is not injected).
+    constexpr std::size_t kNone = std::numeric_limits<std::size_t>::max();
+    std::size_t firstInjectedReelIndex = kNone;
+    std::size_t firstInjectedUserIndex = kNone;
+
+    // New-user cold-start tracking (TDD 18.5): for each per-user impression index (0-based, capped
+    // at kColdStartMaxImpressions), the pooled reward and forced-oracle regret over injected users.
+    struct ColdStartAcc {
+        std::size_t users = 0;
+        double rewardSum = 0.0;
+        double regretSum = 0.0;
+    };
+    std::vector<ColdStartAcc> newUserByImpression(kColdStartMaxImpressions);
+
+    // New-reel exposure (TDD 18.5): impressions landing on injected reels, per round and
+    // cumulative- distinct; plus total impressions per round for the round's exposure share.
+    std::vector<std::size_t> injectedImpressionsByRound(rounds, 0);
+    std::vector<std::size_t> impressionsByRound(rounds, 0);
+    std::vector<std::size_t> distinctInjectedExposedByRound(rounds, 0);
+    std::unordered_set<uint32_t> exposedInjectedReels;
+
+    // Target-reward baseline (TDD 18.5): mean reward per impression over impressions consumed
+    // BEFORE the new users are injected (rounds < newUsersAt) - the established reward level a cold
+    // user is trying to reach.
+    double preInjectionRewardSum = 0.0;
+    std::size_t preInjectionImpressions = 0;
+
     for (size_t round = 0; round < rounds; ++round) {
+        // Mid-simulation injection at the START of the round (Phase 8, TDD 18.5). ORDER within a
+        // round is REELS FIRST, then users, so a user injected on the same round can already be
+        // recommended the freshly-injected reels in its very first feed.
+        if (newReels > 0 && round == newReelsAt) {
+            firstInjectedReelIndex = appendReels(ds, config_.simulation, seed, newReels, sim.now());
+            // Grow the recommender's vector index (D2 insert-only) so injected reels are
+            // retrievable.
+            recommender->onReelsAppended(firstInjectedReelIndex);
+            // Keep live Recall@K ground truth honest against the grown catalog.
+            if (retrievalEval.has_value()) {
+                retrievalEval->appendReels(ds.reels, firstInjectedReelIndex);
+            }
+        }
+        if (newUsers > 0 && round == newUsersAt) {
+            firstInjectedUserIndex = appendUsers(ds, config_.simulation, seed, newUsers);
+            // Apply the FROZEN run-start prior to the injected users only (TDD 11.1); the generator
+            // leaves their estimate vectors empty. From here the OnlineUserStateUpdater evolves
+            // them per interaction (when learning is enabled), exactly like an original cold user.
+            for (std::size_t u = firstInjectedUserIndex; u < ds.users.size(); ++u) {
+                ds.users[u].estimatedPreference = coldStartPrior;
+                ds.users[u].longTermPreference = coldStartPrior;
+                ds.users[u].sessionPreference = coldStartPrior;
+            }
+            // Grow per-user bookkeeping; injected users start with a spent budget of 0, so they
+            // receive requests from THIS round onward - naturally only the remaining rounds, which
+            // is exactly their cold-start window.
+            doneByUser.resize(ds.users.size(), 0);
+        }
+
         for (size_t u = 0; u < ds.users.size(); ++u) {
             User &user = ds.users[u];
             const size_t remaining = interactionsPerUser - doneByUser[u];
@@ -147,7 +227,12 @@ ExperimentResult ExperimentRunner::run() {
                                 : user.recentInteractions.back().sessionId;
             req.feedSize = feedSize;
             req.candidateLimit = config_.recommendation.vectorCandidates;
-            req.enableExploration = false;
+            // Config-driven from Phase 8 (was hard-false). VERIFIED: no existing recommender,
+            // orchestrator, or candidate source reads req.enableExploration today - only Package
+            // A's new exploration source will - so every existing algorithm's output stays
+            // byte-identical to a pre-Phase-8 run regardless of exploration.enabled. (grep: the
+            // only readers are this assignment and a summary.json note string.)
+            req.enableExploration = config_.exploration.enabled;
             req.enableDiversity = false;
             req.requestTime = sim.now();
 
@@ -163,9 +248,22 @@ ExperimentResult ExperimentRunner::run() {
             ++requestCount;
 
             // Oracle sampling: draw for EVERY request so the oracle stream stays aligned across
-            // runs regardless of the outcome (D8).
+            // runs regardless of the outcome (D8). This Bernoulli draw is UNCONDITIONAL and
+            // unchanged from pre-Phase-8, so the global sampled-regret aggregate is byte-identical
+            // when injection is off.
             const bool sampled = oracleRng.bernoulli(config_.evaluation.oracleSampleRate);
-            if (sampled) {
+
+            // Cold-start forcing (TDD 18.5/19): for an INJECTED user we evaluate the oracle on
+            // EVERY request while its own impression count is still inside the tracked window, even
+            // when the Bernoulli gate did not fire. computeOracleRegret is rng-free (only the gate
+            // above draws from the "oracle" stream), so forcing consumes NO rng and every stream
+            // stays aligned.
+            const bool injectedUser =
+                firstInjectedUserIndex != kNone && u >= firstInjectedUserIndex;
+            const bool forceColdStart = injectedUser && doneByUser[u] < kColdStartMaxImpressions;
+
+            double coldStartRequestRegret = 0.0;
+            if (sampled || forceColdStart) {
                 std::vector<ReelId> feedIds;
                 feedIds.reserve(resp.reels.size());
                 for (const RankedReel &ranked : resp.reels) {
@@ -176,8 +274,14 @@ ExperimentResult ExperimentRunner::run() {
                 const OracleResult oracle =
                     computeOracleRegret(ds.hiddenStates[u].hiddenPreference, ds.reels,
                                         user.seenReels, feedIds, feedSize);
-                regretByRound[round].sampled += 1;
-                regretByRound[round].sum += oracle.regret;
+                // Gate-fired samples feed the GLOBAL aggregate exactly as before (injected users'
+                // gate-fired samples are INCLUDED, unchanged). Forced evaluations feed ONLY the
+                // cold-start accumulators below - never double-counted into the global aggregate.
+                if (sampled) {
+                    regretByRound[round].sampled += 1;
+                    regretByRound[round].sum += oracle.regret;
+                }
+                coldStartRequestRegret = oracle.regret;
             }
 
             // Retrieval sampling (TDD 18.1): draw for EVERY request (independent stream) so it
@@ -197,6 +301,8 @@ ExperimentResult ExperimentRunner::run() {
             }
 
             // Consume the feed in order, capped so per-user interactions never exceed the budget.
+            const size_t preFeedDone =
+                doneByUser[u]; // impression index base for injected-user curve
             const size_t toConsume = std::min(remaining, resp.reels.size());
             for (size_t k = 0; k < toConsume; ++k) {
                 const ReelId reelId = resp.reels[k].reelId;
@@ -227,6 +333,34 @@ ExperimentResult ExperimentRunner::run() {
                 s.sessionId = step.event.sessionId.value;
                 metrics.add(round, s);
                 ++impressionCount;
+
+                // --- Phase 8 injection metrics (all inert when injection is not configured)
+                // -------
+                ++impressionsByRound[round];
+                // Target-reward baseline: reward of impressions consumed BEFORE new users appear.
+                if (newUsers > 0 && round < newUsersAt) {
+                    preInjectionRewardSum += step.event.reward;
+                    ++preInjectionImpressions;
+                }
+                // New-reel exposure (TDD 18.5): an impression landing on an injected reel.
+                if (firstInjectedReelIndex != kNone && reelId.value >= firstInjectedReelIndex) {
+                    ++injectedImpressionsByRound[round];
+                    exposedInjectedReels.insert(reelId.value);
+                }
+                // New-user cold-start curve (TDD 18.5): reward + forced-oracle regret indexed by
+                // this injected user's OWN impression index. Only indices in [0,
+                // kColdStartMaxImpressions) are tracked, and every such index implies
+                // forceColdStart fired this request (idx >= preFeedDone), so coldStartRequestRegret
+                // is a real forced evaluation, not the 0 default.
+                if (injectedUser) {
+                    const std::size_t idx = preFeedDone + k;
+                    if (idx < kColdStartMaxImpressions) {
+                        ColdStartAcc &acc = newUserByImpression[idx];
+                        acc.users += 1;
+                        acc.rewardSum += step.event.reward;
+                        acc.regretSum += coldStartRequestRegret;
+                    }
+                }
             }
             doneByUser[u] += toConsume;
         }
@@ -243,6 +377,9 @@ ExperimentResult ExperimentRunner::run() {
             }
             alignmentByRound[round] = cosineSum / static_cast<double>(ds.users.size());
         }
+
+        // Cumulative-distinct injected reels exposed through the END of this round (TDD 18.5).
+        distinctInjectedExposedByRound[round] = exposedInjectedReels.size();
     }
 
     // 4. Assemble the result.
@@ -318,6 +455,103 @@ ExperimentResult ExperimentRunner::run() {
     result.rankingLatency = latencyStats(rankingLatencies);
     result.rerankingLatency = latencyStats(rerankingLatencies);
     result.totalWallSeconds = wall.elapsedMs() / 1000.0;
+
+    // 4b. Cold-start / injection report (Phase 8, TDD 18.5). Assembled + written ONLY when
+    // injection
+    //     is configured; a non-configured run leaves coldStart.configured == false and writes NO
+    //     injection files/keys (byte-identical regression contract).
+    ColdStartReport &cs = result.coldStart;
+    cs.configured = injectionConfigured;
+    if (injectionConfigured) {
+        cs.newUsers = newUsers;
+        cs.newUsersAt = newUsersAt;
+        cs.newReels = newReels;
+        cs.newReelsAt = newReelsAt;
+
+        // Pooled new-user regret over the first N impressions (indices [0, N)); -1 when no
+        // injected- user impression fell in the window.
+        const auto pooledRegret = [&](std::size_t n) -> double {
+            const std::size_t lim = std::min(n, newUserByImpression.size());
+            std::size_t users = 0;
+            double regretSum = 0.0;
+            for (std::size_t i = 0; i < lim; ++i) {
+                users += newUserByImpression[i].users;
+                regretSum += newUserByImpression[i].regretSum;
+            }
+            return users > 0 ? regretSum / static_cast<double>(users) : -1.0;
+        };
+        cs.meanRegretFirst10 = pooledRegret(10);
+        cs.meanRegretFirst25 = pooledRegret(25);
+        cs.meanRegretFirst50 = pooledRegret(50);
+        cs.meanRegretFirst100 = pooledRegret(100);
+
+        // Target = pre-injection mean reward per impression; undefined if there were none (e.g. new
+        // users injected at round 0). Interactions-to-target = smallest K (1-based) at which
+        // injected users' cumulative mean reward over their first K impressions reaches the target;
+        // -1 when the target is undefined or never reached within the tracked window.
+        cs.targetDefined = preInjectionImpressions > 0;
+        cs.targetReward = cs.targetDefined
+                              ? preInjectionRewardSum / static_cast<double>(preInjectionImpressions)
+                              : 0.0;
+        cs.interactionsToTargetReward = -1;
+        if (cs.targetDefined) {
+            std::size_t users = 0;
+            double rewardSum = 0.0;
+            for (std::size_t i = 0; i < newUserByImpression.size(); ++i) {
+                users += newUserByImpression[i].users;
+                rewardSum += newUserByImpression[i].rewardSum;
+                if (users > 0 && rewardSum / static_cast<double>(users) >= cs.targetReward) {
+                    cs.interactionsToTargetReward = static_cast<long>(i) + 1;
+                    break;
+                }
+            }
+        }
+
+        // New-user curve rows up to the largest impression index any injected user actually reached
+        // (header-only when none reached). Deterministic.
+        std::size_t maxReached = 0;
+        bool anyReached = false;
+        for (std::size_t i = 0; i < newUserByImpression.size(); ++i) {
+            if (newUserByImpression[i].users > 0) {
+                maxReached = i;
+                anyReached = true;
+            }
+        }
+        if (anyReached) {
+            cs.newUserCurve.reserve(maxReached + 1);
+            for (std::size_t i = 0; i <= maxReached; ++i) {
+                const ColdStartAcc &acc = newUserByImpression[i];
+                NewUserCurvePoint p;
+                p.impressionIndex = i;
+                p.usersAtIndex = acc.users;
+                p.meanReward = acc.users > 0 ? acc.rewardSum / static_cast<double>(acc.users) : 0.0;
+                p.meanRegret = acc.users > 0 ? acc.regretSum / static_cast<double>(acc.users) : 0.0;
+                cs.newUserCurve.push_back(p);
+            }
+        }
+
+        // New-reel exposure rows (one per round) + run totals.
+        std::size_t cumImpr = 0;
+        cs.newReelExposure.reserve(rounds);
+        for (std::size_t r = 0; r < rounds; ++r) {
+            cumImpr += injectedImpressionsByRound[r];
+            NewReelExposurePoint p;
+            p.round = r;
+            p.injectedImpressions = injectedImpressionsByRound[r];
+            p.injectedImpressionsCum = cumImpr;
+            p.distinctInjectedExposedCum = distinctInjectedExposedByRound[r];
+            p.shareOfRoundImpressions = impressionsByRound[r] > 0
+                                            ? static_cast<double>(injectedImpressionsByRound[r]) /
+                                                  static_cast<double>(impressionsByRound[r])
+                                            : 0.0;
+            cs.newReelExposure.push_back(p);
+        }
+        cs.totalInjectedImpressions = cumImpr;
+        cs.distinctInjectedExposed = exposedInjectedReels.size();
+        cs.injectedImpressionShare = impressionCount > 0 ? static_cast<double>(cumImpr) /
+                                                               static_cast<double>(impressionCount)
+                                                         : 0.0;
+    }
 
     // 5. Write the §26 output layout.
     std::filesystem::create_directories(result.directory);

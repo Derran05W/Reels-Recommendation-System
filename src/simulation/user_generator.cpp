@@ -13,7 +13,7 @@
 namespace rr {
 
 GeneratedUsers generateUsers(const SimulationConfig &config, const std::vector<Topic> &topics,
-                             Rng &rng) {
+                             Rng &rng, uint32_t idOffset) {
     if (config.users > 0 && topics.empty()) {
         throw std::invalid_argument(
             "rr::generateUsers: topics must be non-empty to build user preferences");
@@ -33,14 +33,13 @@ GeneratedUsers generateUsers(const SimulationConfig &config, const std::vector<T
 
     for (uint32_t u = 0; u < config.users; ++u) {
         HiddenUserState hidden;
-        hidden.userId = UserId{u};
+        hidden.userId = UserId{idOffset + u};
 
         // Preferred-topic count in [kMin, kMax], clamped to the number of available topics.
         const uint32_t span = static_cast<uint32_t>(userTraits::kMaxPreferredTopics -
-                                                     userTraits::kMinPreferredTopics);
-        const uint32_t desired =
-            static_cast<uint32_t>(userTraits::kMinPreferredTopics) +
-            static_cast<uint32_t>(rng.uniformInt(span + 1));
+                                                    userTraits::kMinPreferredTopics);
+        const uint32_t desired = static_cast<uint32_t>(userTraits::kMinPreferredTopics) +
+                                 static_cast<uint32_t>(rng.uniformInt(span + 1));
         const uint32_t m = static_cast<uint32_t>(std::min<uint64_t>(desired, topicCount));
 
         // Preference concentration: a single draw that both shapes the weight peakedness and is
@@ -94,7 +93,7 @@ GeneratedUsers generateUsers(const SimulationConfig &config, const std::vector<T
         // Public, recommender-visible User: no hidden state (D11). Estimated / long-term / session
         // preferences are left empty here; cold-start initialization is Phase 4's job.
         User user{};
-        user.id = UserId{u};
+        user.id = UserId{idOffset + u};
         user.totalInteractions = 0;
         user.currentSessionLength = 0;
 

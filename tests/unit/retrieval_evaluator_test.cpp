@@ -141,3 +141,49 @@ TEST(RetrievalEvaluatorTest, InactiveReelsExcludedFromGroundTruth) {
     const rr::RetrievalEvaluator evaluator(kDim, reels);
     EXPECT_EQ(evaluator.groundTruthSize(), 4u);
 }
+
+// --- Phase 8: appendReels grows the ground truth after a mid-simulation reel injection -----------
+
+// Ground truth grows by exactly the number of appended ACTIVE reels; inactive appended reels are
+// skipped (same rule as the constructor).
+TEST(RetrievalEvaluatorTest, AppendReelsGrowsGroundTruth) {
+    std::vector<rr::Reel> reels = basisReels(10); // ground truth built over 10 active reels
+    rr::RetrievalEvaluator evaluator(kDim, reels);
+    ASSERT_EQ(evaluator.groundTruthSize(), 10u);
+
+    const std::size_t firstNew = reels.size();
+    reels.push_back(makeReel(10, 10));                   // active
+    reels.push_back(makeReel(11, 11, /*active=*/false)); // inactive -> skipped
+    reels.push_back(makeReel(12, 12));                   // active
+    evaluator.appendReels(reels, firstNew);
+
+    EXPECT_EQ(evaluator.groundTruthSize(), 12u); // 10 + 2 active appended
+}
+
+// After append the exact recall math is still exact: an ANN index built over the SAME grown catalog
+// scores perfect recall, and the appended reels participate as genuine neighbours.
+TEST(RetrievalEvaluatorTest, RecallExactAfterAppend) {
+    std::vector<rr::Reel> reels = basisReels(20);
+    rr::RetrievalEvaluator evaluator(kDim, reels);
+
+    const std::size_t firstNew = reels.size();
+    for (uint32_t i = 20; i < 30; ++i) {
+        reels.push_back(makeReel(i, i)); // 10 more active reels on fresh axes
+    }
+    evaluator.appendReels(reels, firstNew);
+    ASSERT_EQ(evaluator.groundTruthSize(), 30u);
+
+    // Build an exact "ANN" index over the full grown catalog.
+    rr::ExactVectorIndex ann(kDim);
+    for (const rr::Reel &r : reels) {
+        ann.insert(r.id, r.embedding);
+    }
+
+    // Query aligned to a freshly-appended axis (25): it must be the exact nearest neighbour, and an
+    // exact ANN reproduces the ground truth perfectly.
+    const rr::RetrievalSample s = evaluator.evaluate(ann, basis(25));
+    EXPECT_DOUBLE_EQ(s.recallAt10, 1.0);
+    EXPECT_DOUBLE_EQ(s.recallAt50, 1.0);
+    EXPECT_DOUBLE_EQ(s.distanceError, 0.0);
+    EXPECT_EQ(s.exactK, 30u);
+}

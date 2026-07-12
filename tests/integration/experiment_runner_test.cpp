@@ -380,3 +380,55 @@ TEST(ExperimentRunnerTest, LearningCurveDeterministicByteIdentical) {
     EXPECT_EQ(readFile(a.directory / "learning_curve.csv"),
               readFile(b.directory / "learning_curve.csv"));
 }
+
+// (j) No-injection regression contract (Phase 8): with newUsers == newReels == 0 (the default) the
+// two Phase-8 cold-start files are NOT written and summary.json carries no `cold_start` key, so the
+// output layout is byte-identical to a pre-Phase-8 run. (The existing determinism suite pins the
+// CSV *content* half of the contract; this pins the "no new files / no new keys" half.)
+TEST(ExperimentRunnerTest, NoInjectionOmitsColdStartOutputs) {
+    const fs::path root = fs::path(::testing::TempDir()) / "rr_exp_no_injection";
+    fs::remove_all(root);
+
+    const ExperimentConfig config = tinyConfig(RecommendationAlgorithm::ExactVector);
+    ASSERT_EQ(config.simulation.newUsers, 0u);
+    ASSERT_EQ(config.simulation.newReels, 0u);
+    ExperimentRunner runner(config, root);
+    const ExperimentResult result = runner.run();
+
+    EXPECT_FALSE(result.coldStart.configured);
+    EXPECT_FALSE(fs::exists(result.directory / "new_user_curve.csv"));
+    EXPECT_FALSE(fs::exists(result.directory / "new_reel_exposure.csv"));
+
+    std::ifstream in(result.directory / "summary.json");
+    nlohmann::json j;
+    in >> j;
+    EXPECT_FALSE(j.contains("cold_start")) << "summary.json must have no cold_start key when off";
+}
+
+// (k) enableExploration is config-driven since Phase 8 but read by NO existing recommender, so
+// toggling exploration.enabled leaves a non-exploration algorithm's deterministic metric CSVs
+// byte-identical TODAY. This documents the flip's safety; it still passes post-merge for every
+// non-exploration algorithm. (config.json differs by the exploration.enabled value, so it is
+// intentionally excluded from the comparison.)
+TEST(ExperimentRunnerTest, ExplorationFlagFlipIsInertForNonExplorationAlgorithm) {
+    const fs::path rootOn = fs::path(::testing::TempDir()) / "rr_exp_explore_on";
+    const fs::path rootOff = fs::path(::testing::TempDir()) / "rr_exp_explore_off";
+    fs::remove_all(rootOn);
+    fs::remove_all(rootOff);
+
+    ExperimentConfig on = tinyConfig(RecommendationAlgorithm::HnswRanker);
+    on.exploration.enabled = true;
+    ExperimentConfig off = tinyConfig(RecommendationAlgorithm::HnswRanker);
+    off.exploration.enabled = false;
+
+    ExperimentRunner runnerOn(on, rootOn);
+    ExperimentRunner runnerOff(off, rootOff);
+    const ExperimentResult a = runnerOn.run();
+    const ExperimentResult b = runnerOff.run();
+
+    for (const char *name : {"retrieval_metrics.csv", "recommendation_metrics.csv",
+                             "learning_curve.csv", "regret_curve.csv"}) {
+        EXPECT_EQ(readFile(a.directory / name), readFile(b.directory / name))
+            << name << " changed when exploration.enabled flipped (should be inert)";
+    }
+}

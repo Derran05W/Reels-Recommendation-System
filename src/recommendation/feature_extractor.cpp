@@ -16,6 +16,9 @@ namespace {
 
 float clamp01(double v) { return static_cast<float>(std::clamp(v, 0.0, 1.0)); }
 
+// Whether a candidate's representative source is Exploration (drives the exploration bonus).
+bool isExploration(CandidateSource source) { return source == CandidateSource::Exploration; }
+
 // True iff `id` indexes a real reel (dense-id invariant: reels[i].id.value == i). Guards every
 // reel lookup on the hot path so an out-of-range candidate/interaction id can never throw (D10).
 bool inRange(ReelId id, const std::vector<Reel> &reels) { return id.value < reels.size(); }
@@ -83,6 +86,15 @@ std::vector<FeatureVector> FeatureExtractor::extract(const User &user,
         // pool-relative, so this contribution is directly comparable across requests.
         f.similarity = clamp01((static_cast<double>(c.retrievalSimilarity) + 1.0) / 2.0);
 
+        // exploration bonus (TDD 14.1, activated Phase 8): 1.0 iff this candidate's REPRESENTATIVE
+        // source is Exploration, else 0.0. Depends only on the label, not on the reel lookup, so it
+        // is set here before the range guard. The Orchestrator elects Exploration as the
+        // representative Candidate.source whenever a reel's merged label set contains it, so this
+        // feature and the orchestrator's guaranteed-slot rule read the SAME signal.
+        // explorationWeight (config) turns the 1.0 into a score bonus; with no exploration source
+        // (or weight 0) every value is 0 and the term is inert — exactly the pre-Phase-8 behaviour.
+        f.exploration = isExploration(c.source) ? 1.0f : 0.0f;
+
         if (!inRange(c.reelId, reels_)) {
             // Defensive: an out-of-range candidate (should never reach the ranker post-filter).
             // Neutral / zero everything, and a neutral session/duration match.
@@ -91,7 +103,6 @@ std::vector<FeatureVector> FeatureExtractor::extract(const User &user,
             f.freshness = 0.0f;
             f.trending = 0.0f;
             f.creatorAffinity = 0.0f;
-            f.exploration = 0.0f;
             f.durationMatch = 0.5f;
             f.repetition = 0.0f;
             f.impressionCount = 0.0f;
@@ -141,10 +152,6 @@ std::vector<FeatureVector> FeatureExtractor::extract(const User &user,
             affinity = it->second;
         }
         f.creatorAffinity = clamp01(static_cast<double>(affinity));
-
-        // exploration: constant 0.0 until Phase 8 (epsilon-greedy). The weight exists in config so
-        // the term is wired but inert now (TDD 14.1 exploration bonus deferred).
-        f.exploration = 0.0f;
 
         // duration_match: preferred duration = mean duration of recently completed/liked reels;
         // match = 1 - |candDuration - preferred| / durationRange (5-120 s span => range 115),

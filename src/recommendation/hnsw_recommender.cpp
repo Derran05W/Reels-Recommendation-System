@@ -35,4 +35,14 @@ std::string HNSWRecommender::name() const { return toString(RecommendationAlgori
 
 const VectorIndex *HNSWRecommender::retrievalIndex() const { return &index_; }
 
+void HNSWRecommender::onReelsAppended(size_t firstNewIndex) {
+    // Same eligibility rule as the constructor: appended reels are indexed once, insert-only (D2).
+    for (size_t i = firstNewIndex; i < reels_.size(); ++i) {
+        const Reel &reel = reels_[i];
+        if (reel.active) {
+            index_.insert(reel.id, reel.embedding);
+        }
+    }
+}
+
 } // namespace rr

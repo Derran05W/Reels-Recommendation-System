@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -26,5 +27,31 @@ struct GeneratedDataset {
 // streams are independent, regenerating one subsystem (e.g. widening config.reels) never changes
 // another (e.g. the generated users) — same seed, same stream name, same output.
 GeneratedDataset generateDataset(const SimulationConfig &config, uint64_t seed);
+
+// --- Phase 8 mid-simulation entity injection (TDD 18.5 cold-start metrics) -------------------
+//
+// Both append helpers draw from NEW, independent named rng streams forked from `masterSeed`
+// ("users-injected" / "reels-injected"), never from the four original streams. This is the D8
+// injection contract: enabling injection leaves `generateDataset`'s output and every original
+// stream byte-identical, and (same masterSeed, same count) always produces identical injected
+// entities. Injected entities continue the dense-id sequence (element i keeps id value i), so the
+// factory's density check still holds after growth. Both return the index of the first appended
+// element (= the size of the vector BEFORE the append), which the harness passes to
+// Recommender::onReelsAppended / RetrievalEvaluator::appendReels. A count of 0 appends nothing and
+// returns the current size. `config` supplies dimensions/topic count only; its `users`/`reels`
+// counts are overridden by `count` internally.
+
+// Append `count` freshly generated users to `ds.users` / `ds.hiddenStates` (index-aligned), using
+// the EXISTING topics. The public User's estimated/long-term/session vectors are left as the
+// generator leaves them (empty); the caller applies the frozen cold-start prior (TDD 11.1).
+std::size_t appendUsers(GeneratedDataset &ds, const SimulationConfig &config, uint64_t masterSeed,
+                        uint32_t count);
+
+// Append `count` freshly generated reels to `ds.reels`, using the EXISTING topics/creators. These
+// are the genuinely-fresh injected content: every appended reel's createdAt is overwritten to
+// `createdAt` (the injection-time logical clock, D9) — the generator's random-window createdAt draw
+// is discarded — while counters stay zero and `active` stays true from the normal reel machinery.
+std::size_t appendReels(GeneratedDataset &ds, const SimulationConfig &config, uint64_t masterSeed,
+                        uint32_t count, Timestamp createdAt);
 
 } // namespace rr

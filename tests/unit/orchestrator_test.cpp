@@ -10,11 +10,14 @@
 #include <cstdint>
 #include <vector>
 
+#include "rr/candidate_sources/exploration_candidate_source.hpp"
 #include "rr/domain/candidate.hpp"
 #include "rr/domain/ids.hpp"
 #include "rr/domain/recommendation.hpp"
 #include "rr/domain/reel.hpp"
 #include "rr/domain/user.hpp"
+#include "rr/infrastructure/clock.hpp"
+#include "rr/infrastructure/random.hpp"
 #include "rr/recommendation/ranker.hpp"
 
 namespace {
@@ -104,6 +107,49 @@ const rr::RankedReel &feedById(const rr::RecommendationResponse &response, uint3
     }
     ADD_FAILURE() << "reel " << id << " missing from feed";
     return response.reels.front();
+}
+
+// A Ranker that forces every exploration-labeled candidate BELOW every non-exploration candidate
+// (non-exploration score 1000-id, exploration score -id), ties by ascending id. Lets the
+// guaranteed-slot promotion be observed: exploration items start entirely below the feed cut.
+class ExplorationBottomRanker final : public rr::Ranker {
+  public:
+    std::vector<rr::Candidate> rank(const rr::User &, const std::vector<rr::Candidate> &candidates,
+                                    rr::Timestamp) const override {
+        std::vector<rr::Candidate> out = candidates;
+        for (rr::Candidate &c : out) {
+            const bool expl = c.source == rr::CandidateSource::Exploration;
+            c.rankingScore = expl ? -static_cast<float>(c.reelId.value)
+                                  : (1000.0f - static_cast<float>(c.reelId.value));
+        }
+        std::sort(out.begin(), out.end(), [](const rr::Candidate &a, const rr::Candidate &b) {
+            if (a.rankingScore != b.rankingScore) {
+                return a.rankingScore > b.rankingScore;
+            }
+            return a.reelId.value < b.reelId.value;
+        });
+        return out;
+    }
+};
+
+rr::RecommendationRequest explRequest(std::size_t feedSize, std::size_t candidateLimit) {
+    rr::RecommendationRequest req{};
+    req.userId = rr::UserId{0};
+    req.feedSize = feedSize;
+    req.candidateLimit = candidateLimit;
+    req.enableExploration = true; // let the wired exploration source draw its per-slot gates
+    return req;
+}
+
+std::size_t explorationCountInFeed(const rr::RecommendationResponse &response) {
+    std::size_t n = 0;
+    for (const rr::RankedReel &r : response.reels) {
+        if (std::find(r.sources.begin(), r.sources.end(), rr::CandidateSource::Exploration) !=
+            r.sources.end()) {
+            ++n;
+        }
+    }
+    return n;
 }
 
 } // namespace
@@ -306,4 +352,188 @@ TEST(OrchestratorTest, RankerPathPreservesMultiSourceLabels) {
     EXPECT_EQ(reel0.sources.size(), 2u);
     EXPECT_TRUE(hasSource(reel0, rr::CandidateSource::VectorHNSW));
     EXPECT_TRUE(hasSource(reel0, rr::CandidateSource::VectorExact));
+}
+
+// --- Guaranteed exploration slots (Phase 8, task 3). A real ExplorationCandidateSource over an
+// EMPTY reel set contributes ZERO candidates but still draws its feedSize gates, so it is a clean,
+// controllable source of lastFiredSlots; the exploration-LABELED candidates are injected by a
+// FakeSource. ExplorationBottomRanker forces those below the feed cut so promotion is observable.
+
+TEST(OrchestratorTest, GuaranteePromotesAndIsCappedByGuaranteedSlots) {
+    std::vector<rr::Reel> reels = makeReels(13);
+    std::vector<rr::Candidate> exploit;
+    for (uint32_t i = 0; i < 8; ++i) {
+        exploit.push_back(cand(i, rr::CandidateSource::VectorHNSW, 0.1f, 0.9f));
+    }
+    std::vector<rr::Candidate> expl;
+    for (uint32_t i = 8; i < 13; ++i) {
+        expl.push_back(cand(i, rr::CandidateSource::Exploration, 0.5f, 0.5f)); // 5 exploration
+    }
+    FakeSource exploitSrc(exploit);
+    FakeSource explSrc(expl);
+    std::vector<rr::Reel> emptyReels;
+    rr::Rng rng(1);
+    rr::ExplorationCandidateSource realExpl(emptyReels, /*epsilon=*/1.0, /*poolCap=*/50,
+                                            /*window=*/1e9, &rng);
+    ExplorationBottomRanker ranker;
+    rr::Orchestrator orch({&exploitSrc, &explSrc, &realExpl}, reels, &ranker, &realExpl,
+                          /*guaranteedSlots=*/2);
+    rr::User user{};
+
+    const rr::RecommendationResponse resp = orch.recommend(user, explRequest(5, 100));
+    EXPECT_EQ(realExpl.lastFiredSlots(), 5u); // epsilon=1 => all feedSize gates fire
+    // g = min(fired=5, guaranteedSlots=2, explCount=5) = 2. The two highest-ranked exploration
+    // items (ids 8,9) are promoted; the two lowest-ranked non-exploration prefix items (3,4) drop.
+    EXPECT_EQ(feedIds(resp), (std::vector<uint32_t>{0, 1, 2, 8, 9}));
+    EXPECT_EQ(explorationCountInFeed(resp), 2u);
+}
+
+TEST(OrchestratorTest, GuaranteeIsCappedByExplorationCount) {
+    std::vector<rr::Reel> reels = makeReels(10);
+    std::vector<rr::Candidate> exploit;
+    for (uint32_t i = 0; i < 8; ++i) {
+        exploit.push_back(cand(i, rr::CandidateSource::VectorHNSW, 0.1f, 0.9f));
+    }
+    std::vector<rr::Candidate> expl{cand(8, rr::CandidateSource::Exploration, 0.5f, 0.5f),
+                                    cand(9, rr::CandidateSource::Exploration, 0.5f, 0.5f)};
+    FakeSource exploitSrc(exploit);
+    FakeSource explSrc(expl);
+    std::vector<rr::Reel> emptyReels;
+    rr::Rng rng(2);
+    rr::ExplorationCandidateSource realExpl(emptyReels, 1.0, 50, 1e9, &rng);
+    ExplorationBottomRanker ranker;
+    rr::Orchestrator orch({&exploitSrc, &explSrc, &realExpl}, reels, &ranker, &realExpl,
+                          /*guaranteedSlots=*/5);
+    rr::User user{};
+
+    const rr::RecommendationResponse resp = orch.recommend(user, explRequest(6, 100));
+    // g = min(fired=6, guaranteedSlots=5, explCount=2) = 2 (only two exploration items exist).
+    EXPECT_EQ(explorationCountInFeed(resp), 2u);
+    EXPECT_EQ(feedIds(resp), (std::vector<uint32_t>{0, 1, 2, 3, 8, 9}));
+}
+
+TEST(OrchestratorTest, GuaranteeIsCappedByFiredSlots) {
+    std::vector<rr::Reel> reels = makeReels(16);
+    std::vector<rr::Candidate> exploit;
+    for (uint32_t i = 0; i < 8; ++i) {
+        exploit.push_back(cand(i, rr::CandidateSource::VectorHNSW, 0.1f, 0.9f));
+    }
+    std::vector<rr::Candidate> expl;
+    for (uint32_t i = 8; i < 16; ++i) {
+        expl.push_back(cand(i, rr::CandidateSource::Exploration, 0.5f, 0.5f)); // 8 exploration
+    }
+    FakeSource exploitSrc(exploit);
+    FakeSource explSrc(expl);
+    std::vector<rr::Reel> emptyReels;
+    rr::Rng rng(1);
+    // epsilon=0.5 with feedSize=8 => a partial, deterministic number of gates fire.
+    rr::ExplorationCandidateSource realExpl(emptyReels, 0.5, 50, 1e9, &rng);
+    ExplorationBottomRanker ranker;
+    rr::Orchestrator orch({&exploitSrc, &explSrc, &realExpl}, reels, &ranker, &realExpl,
+                          /*guaranteedSlots=*/100);
+    rr::User user{};
+
+    const rr::RecommendationResponse resp = orch.recommend(user, explRequest(8, 100));
+    const std::size_t fired = realExpl.lastFiredSlots();
+    // guaranteedSlots (100) and explCount (8) both exceed fired (<= feedSize 8), so fired binds:
+    // exactly `fired` exploration items are guaranteed into the feed.
+    EXPECT_GT(fired, 0u);
+    EXPECT_LE(fired, 8u);
+    EXPECT_EQ(explorationCountInFeed(resp), fired);
+}
+
+TEST(OrchestratorTest, GuaranteeInertWithoutExplorationCandidates) {
+    std::vector<rr::Reel> reels = makeReels(8);
+    std::vector<rr::Candidate> exploit;
+    for (uint32_t i = 0; i < 8; ++i) {
+        exploit.push_back(cand(i, rr::CandidateSource::VectorHNSW, 0.1f, 0.9f));
+    }
+    FakeSource exploitSrc(exploit);
+    std::vector<rr::Reel> emptyReels;
+    rr::Rng rng(3);
+    rr::ExplorationCandidateSource realExpl(emptyReels, 1.0, 50, 1e9, &rng);
+    ExplorationBottomRanker ranker;
+    rr::Orchestrator orch({&exploitSrc, &realExpl}, reels, &ranker, &realExpl,
+                          /*guaranteedSlots=*/2);
+    rr::User user{};
+
+    const rr::RecommendationResponse resp = orch.recommend(user, explRequest(5, 100));
+    EXPECT_EQ(realExpl.lastFiredSlots(), 5u);    // gates fired...
+    EXPECT_EQ(explorationCountInFeed(resp), 0u); // ...but there is nothing to promote
+    EXPECT_EQ(feedIds(resp), (std::vector<uint32_t>{0, 1, 2, 3, 4}));
+}
+
+TEST(OrchestratorTest, GuaranteeInertWhenExplorationSourceDefaulted) {
+    // Defaulted trailing params (no exploration source, guaranteedSlots 0) => byte-for-byte the
+    // pre-Phase-8 pipeline: exploration-labeled candidates rank on merit and, being at the bottom,
+    // never enter the feed.
+    std::vector<rr::Reel> reels = makeReels(10);
+    std::vector<rr::Candidate> exploit;
+    for (uint32_t i = 0; i < 8; ++i) {
+        exploit.push_back(cand(i, rr::CandidateSource::VectorHNSW, 0.1f, 0.9f));
+    }
+    std::vector<rr::Candidate> expl{cand(8, rr::CandidateSource::Exploration, 0.5f, 0.5f),
+                                    cand(9, rr::CandidateSource::Exploration, 0.5f, 0.5f)};
+    FakeSource exploitSrc(exploit);
+    FakeSource explSrc(expl);
+    ExplorationBottomRanker ranker;
+    rr::Orchestrator orch({&exploitSrc, &explSrc}, reels, &ranker); // defaulted trailing params
+    rr::User user{};
+
+    const rr::RecommendationResponse resp = orch.recommend(user, explRequest(5, 100));
+    EXPECT_EQ(explorationCountInFeed(resp), 0u);
+    EXPECT_EQ(feedIds(resp), (std::vector<uint32_t>{0, 1, 2, 3, 4}));
+}
+
+TEST(OrchestratorTest, GuaranteeIsDeterministic) {
+    auto run = [] {
+        std::vector<rr::Reel> reels = makeReels(13);
+        std::vector<rr::Candidate> exploit;
+        for (uint32_t i = 0; i < 8; ++i) {
+            exploit.push_back(cand(i, rr::CandidateSource::VectorHNSW, 0.1f, 0.9f));
+        }
+        std::vector<rr::Candidate> expl;
+        for (uint32_t i = 8; i < 13; ++i) {
+            expl.push_back(cand(i, rr::CandidateSource::Exploration, 0.5f, 0.5f));
+        }
+        FakeSource exploitSrc(exploit);
+        FakeSource explSrc(expl);
+        std::vector<rr::Reel> emptyReels;
+        rr::Rng rng(42);
+        rr::ExplorationCandidateSource realExpl(emptyReels, 1.0, 50, 1e9, &rng);
+        ExplorationBottomRanker ranker;
+        rr::Orchestrator orch({&exploitSrc, &explSrc, &realExpl}, reels, &ranker, &realExpl, 3);
+        rr::User user{};
+        return feedIds(orch.recommend(user, explRequest(5, 100)));
+    };
+    EXPECT_EQ(run(), run());
+}
+
+TEST(OrchestratorTest, GuaranteeCountsMultiLabelReelAsExploration) {
+    // Reel 5 is produced by BOTH an exploitation source and the exploration source. The
+    // representative label is Exploration, so it is protected AND both labels survive to the feed.
+    std::vector<rr::Reel> reels = makeReels(6);
+    std::vector<rr::Candidate> exploit;
+    for (uint32_t i = 0; i < 6; ++i) {
+        exploit.push_back(cand(i, rr::CandidateSource::VectorHNSW, 0.1f, 0.9f));
+    }
+    std::vector<rr::Candidate> expl{cand(5, rr::CandidateSource::Exploration, 0.5f, 0.5f)};
+    FakeSource exploitSrc(exploit);
+    FakeSource explSrc(expl);
+    std::vector<rr::Reel> emptyReels;
+    rr::Rng rng(7);
+    rr::ExplorationCandidateSource realExpl(emptyReels, 1.0, 50, 1e9, &rng);
+    ExplorationBottomRanker ranker;
+    rr::Orchestrator orch({&exploitSrc, &explSrc, &realExpl}, reels, &ranker, &realExpl,
+                          /*guaranteedSlots=*/1);
+    rr::User user{};
+
+    const rr::RecommendationResponse resp = orch.recommend(user, explRequest(5, 100));
+    // g = min(fired=5, guaranteedSlots=1, explCount=1) = 1. Reel 5 (bottom-ranked, exploration
+    // representative) is promoted, displacing the lowest-ranked non-exploration prefix item (4).
+    EXPECT_EQ(explorationCountInFeed(resp), 1u);
+    EXPECT_EQ(feedIds(resp), (std::vector<uint32_t>{0, 1, 2, 3, 5}));
+    const rr::RankedReel &reel5 = feedById(resp, 5);
+    EXPECT_TRUE(hasSource(reel5, rr::CandidateSource::VectorHNSW));
+    EXPECT_TRUE(hasSource(reel5, rr::CandidateSource::Exploration));
 }

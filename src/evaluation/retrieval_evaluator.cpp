@@ -48,6 +48,17 @@ RetrievalEvaluator::RetrievalEvaluator(std::size_t dimensions, const std::vector
     }
 }
 
+void RetrievalEvaluator::appendReels(const std::vector<Reel> &reels, std::size_t firstNewIndex) {
+    // Mirror the constructor's rule for the appended slice only: active reels are inserted,
+    // inactive skipped. insert() validates dimension/finiteness and throws on a bad embedding (a
+    // setup error, D10), which correctly surfaces here.
+    for (std::size_t i = firstNewIndex; i < reels.size(); ++i) {
+        if (reels[i].active) {
+            ground_.insert(reels[i].id, reels[i].embedding);
+        }
+    }
+}
+
 RetrievalSample RetrievalEvaluator::evaluate(const VectorIndex &annIndex,
                                              const Embedding &query) const {
     const std::vector<VectorSearchResult> exact = ground_.search(query, kEval);

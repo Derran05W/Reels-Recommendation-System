@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 #include "rr/domain/creator.hpp"        // rr::Creator, rr::Topic
@@ -16,12 +17,17 @@ namespace rr {
 // and reel.primaryTopic / reel.secondaryTopics are set to exactly the topic ids used to build it.
 // Duration follows the 4-bucket distribution of TDD 9.2, quality is a clamped gaussian around the
 // creator's baseQuality, createdAt is spread over a fixed window, and all engagement counters are
-// zeroed. ReelId values are dense in [0, config.reels).
+// zeroed. ReelId values are dense in [idOffset, idOffset + config.reels).
 //
 // The passed-in Rng is consumed as-is; the CALLER forks it on stream "reels" (D8). Returns an
 // empty vector when config.reels == 0, or (documented no-crash fallback) when `topics` or
 // `creators` is empty, since a reel cannot be constructed without both.
+//
+// `idOffset` (Phase 8 mid-simulation injection) shifts the assigned ReelId values so appended
+// reels continue the dense-id sequence past the existing catalog; it affects ONLY id assignment,
+// never any rng draw, so idOffset == 0 (the default) reproduces the original byte-identical output.
 std::vector<Reel> generateReels(const SimulationConfig &config, const std::vector<Topic> &topics,
-                                const std::vector<Creator> &creators, Rng &rng);
+                                const std::vector<Creator> &creators, Rng &rng,
+                                uint32_t idOffset = 0);
 
 } // namespace rr

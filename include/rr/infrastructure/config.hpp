@@ -19,6 +19,16 @@ struct SimulationConfig {
     uint32_t topics = 32;
     uint32_t dimensions = 64;
     uint32_t interactionsPerUser = 200;
+    // Mid-simulation entity injection (Phase 8, TDD 18.5 cold-start metrics): at the START of
+    // round new_users_at / new_reels_at (0-based round index in the harness's interleaved loop),
+    // inject that many freshly generated users / reels so genuinely-cold entities are measurable.
+    // A count of 0 disables the injection (the "_at" value is then ignored). Injected entities are
+    // generated on their own named rng streams, so enabling injection never perturbs the original
+    // dataset (D8). An addition to the TDD 21 example, mandated by phase-8 task 5.
+    uint32_t newUsers = 0;
+    uint32_t newUsersAt = 0;
+    uint32_t newReels = 0;
+    uint32_t newReelsAt = 0;
     bool operator==(const SimulationConfig &) const = default;
 };
 
@@ -93,6 +103,18 @@ struct LearningConfig {
 struct ExplorationConfig {
     bool enabled = true;
     double epsilon = 0.05;
+    // Recency window (simulated seconds) defining a "recently created" reel for the Fresh
+    // candidate source (TDD 12.5) and the exploration source's random-fresh mode (TDD 12.7):
+    // a reel qualifies at request time t iff createdAt >= t - fresh_window_seconds. An addition
+    // to the TDD 21 example; TDD 12.5 defines no window, and experiments need to vary it.
+    double freshWindowSeconds = 259200.0; // 3 simulated days
+    // Phase-8 task 3: exploration candidates are protected from being ranked out entirely. The
+    // final feed carries min(slots that fired the per-slot epsilon gate this request,
+    // guaranteed_slots, exploration candidates available in the ranked pool) exploration items;
+    // the promotion rule is documented at its implementation in the Orchestrator. epsilon = 0
+    // fires no slots, so the guarantee is structurally inert there (the epsilon=0 no-op exit
+    // criterion).
+    uint32_t guaranteedSlots = 2;
     bool operator==(const ExplorationConfig &) const = default;
 };
 

@@ -1,12 +1,13 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
-#include "rr/domain/creator.hpp"          // Topic
+#include "rr/domain/creator.hpp" // Topic
 #include "rr/domain/hidden_user_state.hpp"
 #include "rr/domain/user.hpp"
-#include "rr/infrastructure/config.hpp"   // SimulationConfig
-#include "rr/infrastructure/random.hpp"   // Rng
+#include "rr/infrastructure/config.hpp" // SimulationConfig
+#include "rr/infrastructure/random.hpp" // Rng
 
 namespace rr {
 
@@ -43,7 +44,7 @@ inline constexpr double kNoiseScale = 0.05;
 } // namespace userTraits
 
 // Index-aligned output of user generation: users[i] and hiddenStates[i] describe the same user,
-// with hiddenStates[i].userId == users[i].id == UserId{i}.
+// with hiddenStates[i].userId == users[i].id == UserId{idOffset + i}.
 struct GeneratedUsers {
     std::vector<User> users;
     std::vector<HiddenUserState> hiddenStates;
@@ -59,8 +60,13 @@ struct GeneratedUsers {
 // visible User carries no hidden state (D11) and no estimated-preference state yet (its estimated/
 // long-term/session preferences are left empty — cold-start initialization happens in Phase 4).
 //
+// `idOffset` (Phase 8 mid-simulation injection) shifts the assigned UserId values so appended users
+// continue the dense-id sequence past the existing population; it affects ONLY id assignment
+// (users[i].id and hiddenStates[i].userId), never any rng draw, so idOffset == 0 (the default)
+// reproduces the original byte-identical output.
+//
 // Throws std::invalid_argument (a setup error, per D10) if config.users > 0 and topics is empty.
 GeneratedUsers generateUsers(const SimulationConfig &config, const std::vector<Topic> &topics,
-                             Rng &rng);
+                             Rng &rng, uint32_t idOffset = 0);
 
 } // namespace rr

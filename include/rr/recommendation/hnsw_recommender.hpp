@@ -35,6 +35,10 @@ class HNSWRecommender final : public Recommender {
     // Recall@K / distance error against exact ground truth. Never touched on the feed path.
     const VectorIndex *retrievalIndex() const override;
 
+    // Inserts appended ACTIVE reels into the HNSW graph (same rule as the constructor; D2
+    // insert-only, never update/remove).
+    void onReelsAppended(size_t firstNewIndex) override;
+
   private:
     const std::vector<Reel> &reels_;
     const std::vector<User> &users_;

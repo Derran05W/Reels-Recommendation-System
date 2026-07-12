@@ -37,6 +37,64 @@ struct RoundMetrics {
     double meanEstimatedHiddenCosine = 0.0;
 };
 
+// One row of new_user_curve.csv (Phase 8, TDD 18.5): the mean reward and mean oracle regret over
+// all INJECTED users at a given per-user impression index. `meanReward`/`meanRegret` are 0 when
+// `usersAtIndex` is 0 (no injected user reached that index).
+struct NewUserCurvePoint {
+    std::size_t impressionIndex = 0;
+    std::size_t usersAtIndex = 0;
+    double meanReward = 0.0;
+    double meanRegret = 0.0;
+};
+
+// One row of new_reel_exposure.csv (Phase 8, TDD 18.5 new-reel exposure): per-round impressions
+// landing on injected reels, with cumulative totals and this round's share of all impressions.
+struct NewReelExposurePoint {
+    std::size_t round = 0;
+    std::size_t injectedImpressions = 0;    // impressions on injected reels this round
+    std::size_t injectedImpressionsCum = 0; // running total across rounds
+    std::size_t distinctInjectedExposedCum =
+        0;                                // distinct injected reels with >= 1 impression so far
+    double shareOfRoundImpressions = 0.0; // injectedImpressions / all impressions this round
+};
+
+// Cold-start / injection report (Phase 8, TDD 18.5). Populated only when injection is configured
+// (newUsers > 0 || newReels > 0); when `configured` is false the whole block is absent from output
+// and the run is byte-identical to a pre-Phase-8 run (the regression contract).
+struct ColdStartReport {
+    bool configured = false;
+    uint32_t newUsers = 0;
+    uint32_t newUsersAt = 0;
+    uint32_t newReels = 0;
+    uint32_t newReelsAt = 0;
+
+    // New-user regret over the first N impressions (TDD 18.5): the pooled mean oracle regret across
+    // all injected users' impressions with index in [0, N). -1 sentinel when no injected-user
+    // impressions fell in the window.
+    double meanRegretFirst10 = -1.0;
+    double meanRegretFirst25 = -1.0;
+    double meanRegretFirst50 = -1.0;
+    double meanRegretFirst100 = -1.0;
+
+    // Interactions-to-reach-target-reward (TDD 18.5). The target is the run's overall PRE-INJECTION
+    // mean reward per impression (impressions consumed in rounds < newUsersAt); `targetDefined` is
+    // false when there were no pre-injection impressions (e.g. users injected at round 0).
+    // `interactionsToTargetReward` is the smallest impression count K (1-based) at which the
+    // injected users' cumulative mean reward over their first K impressions reaches the target; -1
+    // when the target is undefined or never reached within the tracked window.
+    bool targetDefined = false;
+    double targetReward = 0.0;
+    long interactionsToTargetReward = -1;
+
+    // New-reel exposure totals over the whole run (TDD 18.5).
+    std::size_t totalInjectedImpressions = 0;
+    std::size_t distinctInjectedExposed = 0;
+    double injectedImpressionShare = 0.0; // totalInjectedImpressions / all impressions in the run
+
+    std::vector<NewUserCurvePoint> newUserCurve;
+    std::vector<NewReelExposurePoint> newReelExposure;
+};
+
 // Everything one experiment produced, in memory. The ResultsWriter serializes it to disk; the
 // simulate CLI prints headline lines from it. `directory` is the created <experiment-id> dir.
 struct ExperimentResult {
@@ -86,6 +144,10 @@ struct ExperimentResult {
     LatencyStats rankingLatency;
     LatencyStats rerankingLatency;
     double totalWallSeconds = 0.0;
+
+    // Cold-start / injection metrics (Phase 8, TDD 18.5). `configured` is false for a normal run,
+    // in which case no injection files/keys are written (byte-identical to a pre-Phase-8 run).
+    ColdStartReport coldStart;
 };
 
 // Runs the end-to-end evaluation loop (TDD 20 + phase-4 task 4, phase-7 tasks 1/4) from a

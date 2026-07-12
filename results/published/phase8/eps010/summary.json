@@ -1,0 +1,107 @@
+{
+  "algorithm": "hnsw_ranker_exploration",
+  "cold_start": {
+    "interactions_to_target_reward": -1,
+    "new_reel_exposure": {
+      "distinct_injected_exposed": 1453,
+      "share_of_all_impressions": 0.046780975609756095,
+      "total_injected_impressions": 95901
+    },
+    "new_reels": 5000,
+    "new_reels_at": 10,
+    "new_user_regret": {
+      "first_10": 0.6818826569079109,
+      "first_100": 0.5977612463894665,
+      "first_25": 0.6514840154339911,
+      "first_50": 0.6270270570133115
+    },
+    "new_users": 500,
+    "new_users_at": 10,
+    "note": "Mid-simulation injection (Phase 8, TDD 18.5). Entities are injected at the START of their configured 0-based round; on a shared round REELS are injected before USERS. Injected users start from the run-START frozen cold-start prior (TDD 11.1) and receive requests from their injection round onward (their cold-start window). new_user_regret.first_N is the POOLED mean oracle regret over all injected users' first N impressions (-1 if none reached N); regret is in true-affinity units (see oracle note). target_reward is the run's pre-injection mean reward per impression (impressions in rounds before new_users_at); interactions_to_target_reward is the smallest 1-based impression count K at which injected users' cumulative mean reward reaches the target (-1 if undefined or not reached within the first 100 impressions). Curves are in new_user_curve.csv / new_reel_exposure.csv; all values are deterministic.",
+    "target_reward": 0.1786240879963822,
+    "target_reward_defined": true
+  },
+  "counts": {
+    "impressions": 2050000,
+    "reels": 105000,
+    "requests": 205000,
+    "rounds": 20,
+    "sessions": 126538,
+    "users": 10500
+  },
+  "experiment_id": "hnsw_ranker_exploration-seed42-20260712T005924",
+  "learning": {
+    "enabled": true,
+    "final_estimated_hidden_cosine": 0.42151771598610016,
+    "note": "Online preference learning is ENABLED (Phase 7, TDD 8.3/11.2/11.3): every user starts at the cold-start global-average estimate (TDD 11.1) and the OnlineUserStateUpdater updates the long-term/session/estimated preference vectors after each interaction. learning_curve.csv's mean_estimated_hidden_cosine should trend up as estimates converge toward the hidden preference."
+  },
+  "metrics": {
+    "completion_rate": 0.5355034146341463,
+    "follow_rate": 0.03514,
+    "instant_skip_rate": 0.36742536585365854,
+    "like_rate": 0.12333073170731708,
+    "mean_session_length": 16.20066699331426,
+    "mean_true_affinity": 0.24272799094411876,
+    "mean_watch_ratio": 0.5710266732594693,
+    "mean_watch_seconds": 17.701643927621326,
+    "reward_per_impression": 0.21398063945213036,
+    "reward_per_session": 3.466629082780408,
+    "share_rate": 0.04523609756097561
+  },
+  "notes": {
+    "baseline_flags": "Requests set enableExploration = exploration.enabled (config-driven since Phase 8; no existing recommender reads it, so it is inert for every non-exploration algorithm) and enableDiversity=false; candidateLimit = recommendation.vectorCandidates; requestTime = simulator logical clock; sessionId = the most recent interaction's session (SessionId{0} before any interaction).",
+    "learning": "Online preference learning is ENABLED (Phase 7, TDD 8.3/11.2/11.3): every user starts at the cold-start global-average estimate (TDD 11.1) and the OnlineUserStateUpdater updates the long-term/session/estimated preference vectors after each interaction. learning_curve.csv's mean_estimated_hidden_cosine should trend up as estimates converge toward the hidden preference."
+  },
+  "oracle": {
+    "cumulative_regret": 2175.302642960381,
+    "mean_regret": 0.5377756842918123,
+    "regret_units_note": "Regret is measured in TRUE-AFFINITY units, not reward units: simulating counterfactual oracle interactions would consume behaviour rng draws and perturb determinism (D8), so the oracle compares mean true affinity of its exhaustive top-k against the recommended feed. Affinity is the monotone core of the reward (TDD 10.1/10.5).",
+    "sample_rate": 0.02,
+    "sampled_requests": 4045
+  },
+  "retrieval": {
+    "applicable": true,
+    "mean_distance_error": 0.009082485939502944,
+    "note": "Live retrieval quality (TDD 18.1) on a Bernoulli(retrieval_sample_rate) subset of requests: the recommender's ANN index is compared against an exact ground-truth index over the active reels for the same query, at k=50. Recall@K = |ANN_K intersect Exact_K| / min(K, corpus); Recall@10 uses the first 10 results. Distance error is the mean positionwise |d_ann,i - d_exact,i| over the first 10 results. Values are deterministic (exact searches). For an exact recommender this measures exactly recall 1.0 / distance error 0.0 (a wiring self-check).",
+    "recall_at_10": 0.6982820329277024,
+    "recall_at_50": 0.623965640658554,
+    "sample_rate": 0.02,
+    "sampled_requests": 4191
+  },
+  "seed": 42,
+  "timing": {
+    "ranking_latency_ms": {
+      "max": 5.559167,
+      "mean": 0.1945970806097537,
+      "p50": 0.179375,
+      "p95": 0.400583,
+      "p99": 0.443209,
+      "samples": 205000
+    },
+    "recommend_latency_ms": {
+      "max": 47.485291,
+      "mean": 4.858433444385285,
+      "p50": 4.3717085,
+      "p95": 9.207049399999999,
+      "p99": 11.725298250000005,
+      "samples": 205000
+    },
+    "reranking_latency_ms": {
+      "max": 0.022959,
+      "mean": 0.00022819147804895444,
+      "p50": 0.000208,
+      "p95": 0.000542,
+      "p99": 0.002875,
+      "samples": 205000
+    },
+    "retrieval_latency_ms": {
+      "max": 46.612834,
+      "mean": 4.534573228956047,
+      "p50": 4.047978499999999,
+      "p95": 8.790088099999998,
+      "p99": 11.242961330000004,
+      "samples": 205000
+    },
+    "total_wall_seconds": 1105.952086083
+  }
+}

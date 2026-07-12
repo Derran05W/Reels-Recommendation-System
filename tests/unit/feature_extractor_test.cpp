@@ -17,6 +17,7 @@
 #include "rr/domain/reel.hpp"
 #include "rr/domain/user.hpp"
 #include "rr/infrastructure/config.hpp"
+#include "rr/recommendation/weighted_ranker.hpp"
 
 namespace {
 
@@ -150,10 +151,50 @@ TEST(FeatureExtractorTest, CreatorAffinityLookupAndAbsent) {
     EXPECT_FLOAT_EQ(extractOne(reels, user, cand(0), 0).creatorAffinity, 0.6f);
 }
 
-TEST(FeatureExtractorTest, ExplorationConstantZero) {
-    std::vector<rr::Reel> reels{makeReel(0)};
+TEST(FeatureExtractorTest, ExplorationOneForExplorationSourceElseZero) {
+    // Phase 8: the exploration feature is 1.0 iff the candidate's representative source is
+    // Exploration, else 0.0 (replacing the pre-Phase-8 constant 0).
+    std::vector<rr::Reel> reels{makeReel(0), makeReel(1)};
     rr::User user{};
-    EXPECT_FLOAT_EQ(extractOne(reels, user, cand(0), 0).exploration, 0.0f);
+    EXPECT_FLOAT_EQ(extractOne(reels, user, cand(0), 0).exploration, 0.0f); // VectorHNSW source
+    rr::Candidate explCand = cand(1);
+    explCand.source = rr::CandidateSource::Exploration;
+    EXPECT_FLOAT_EQ(extractOne(reels, user, explCand, 0).exploration, 1.0f);
+}
+
+TEST(FeatureExtractorTest, ExplorationBonusMovesRankerScore) {
+    // Two candidates identical in every feature except source: the Exploration-labeled one carries
+    // the explorationWeight bonus in its contributions and thus a strictly higher score. Verifies
+    // the previously-inert "exploration" ranker term now moves scores and is inspectable.
+    std::vector<rr::Reel> reels{makeReel(0),
+                                makeReel(1)}; // identical inert reels (embedding {1,0})
+    rr::User user{};
+    const rr::RankingConfig config{}; // explorationWeight default 0.05 (> 0)
+    rr::WeightedRanker ranker(reels, config);
+
+    rr::Candidate base = cand(0, 0.5f); // VectorHNSW
+    rr::Candidate expl = cand(1, 0.5f);
+    expl.source = rr::CandidateSource::Exploration;
+    const std::vector<rr::Candidate> ranked = ranker.rank(user, {base, expl}, 0);
+    ASSERT_EQ(ranked.size(), 2u);
+
+    const rr::Candidate *b = nullptr;
+    const rr::Candidate *e = nullptr;
+    for (const rr::Candidate &c : ranked) {
+        if (c.reelId.value == 0) {
+            b = &c;
+        } else {
+            e = &c;
+        }
+    }
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(e, nullptr);
+    EXPECT_FLOAT_EQ(b->featureContributions.at("exploration"), 0.0f);
+    EXPECT_FLOAT_EQ(e->featureContributions.at("exploration"),
+                    static_cast<float>(config.explorationWeight));
+    EXPECT_GT(e->rankingScore, b->rankingScore);
+    EXPECT_NEAR(e->rankingScore - b->rankingScore, static_cast<float>(config.explorationWeight),
+                1e-5f);
 }
 
 TEST(FeatureExtractorTest, DurationMatchNeutralWithoutHistory) {

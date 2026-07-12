@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <initializer_list>
 #include <iterator>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "rr/candidate_sources/exploration_candidate_source.hpp"
 #include "rr/domain/candidate.hpp"
 #include "rr/domain/ids.hpp"
 #include "rr/infrastructure/clock.hpp"
@@ -35,11 +37,117 @@ bool moreRelevant(const MergedCandidate &a, const MergedCandidate &b) {
     return a.reelId.value < b.reelId.value;
 }
 
+// The single source label carried on the Candidate handed to the ranker (and read by the
+// FeatureExtractor's exploration feature and the guaranteed-slot rule). Exploration WINS the slot
+// whenever it appears in the merged label set — a reel any exploration mode surfaced counts as
+// exploration even if an exploitation source also produced it — otherwise the first-seen label is
+// kept. Non-exploration recommenders never have Exploration in a label set, so this reduces to
+// sources.front() and every pre-Phase-8 output stays byte-identical.
+CandidateSource representativeSource(const std::vector<CandidateSource> &sources) {
+    for (CandidateSource s : sources) {
+        if (s == CandidateSource::Exploration) {
+            return s;
+        }
+    }
+    return sources.front();
+}
+
+bool isExplorationLabeled(const Candidate &c) { return c.source == CandidateSource::Exploration; }
+
 } // namespace
 
 Orchestrator::Orchestrator(std::vector<CandidateGenerator *> sources,
-                           const std::vector<Reel> &reels, const Ranker *ranker)
-    : sources_(std::move(sources)), reels_(reels), ranker_(ranker) {}
+                           const std::vector<Reel> &reels, const Ranker *ranker,
+                           const ExplorationCandidateSource *explorationSource,
+                           uint32_t guaranteedSlots)
+    : sources_(std::move(sources)), reels_(reels), ranker_(ranker),
+      explorationSource_(explorationSource), guaranteedSlots_(guaranteedSlots) {}
+
+// Guaranteed-exploration-slot promotion (Phase 8, TDD 12.7 task 3). `ranked` is the full capped
+// pool in best-first order; only the first `feedSize` survive truncation. We ensure that prefix
+// carries g = min(lastFiredSlots, guaranteedSlots, exploration items in the pool) exploration-
+// labeled items:
+//   * P = the `need` HIGHEST-ranked exploration items strictly below the cut (smallest indices);
+//   * E = the `need` LOWEST-ranked non-exploration items in the prefix (largest indices);
+// the new feed is (prefix minus E, order preserved) followed by P (in rank order); the evicted and
+// the un-promoted below-cut items form the tail in ascending original rank. Everything's relative
+// order is otherwise preserved, so the reorder is fully deterministic. lastFiredSlots <= feedSize
+// (the source draws exactly feedSize gates), which guarantees enough non-exploration items exist in
+// the prefix to evict.
+void Orchestrator::applyExplorationGuarantee(std::vector<Candidate> &ranked,
+                                             std::size_t feedSize) const {
+    if (explorationSource_ == nullptr || guaranteedSlots_ == 0) {
+        return;
+    }
+    // When the whole pool already fits in the feed, every exploration item is already shown.
+    if (ranked.size() <= feedSize) {
+        return;
+    }
+    const std::size_t fired = explorationSource_->lastFiredSlots();
+    if (fired == 0) {
+        return;
+    }
+
+    std::size_t explTotal = 0;
+    std::size_t inPrefix = 0;
+    for (std::size_t i = 0; i < ranked.size(); ++i) {
+        if (isExplorationLabeled(ranked[i])) {
+            ++explTotal;
+            if (i < feedSize) {
+                ++inPrefix;
+            }
+        }
+    }
+    const std::size_t g =
+        std::min<std::size_t>({fired, static_cast<std::size_t>(guaranteedSlots_), explTotal});
+    if (inPrefix >= g) {
+        return;
+    }
+    const std::size_t need = g - inPrefix;
+
+    // P: highest-ranked exploration items below the cut (there are always >= need of them, since
+    // explTotal - inPrefix = below-cut exploration items and need = g - inPrefix <= that).
+    std::vector<std::size_t> promote;
+    promote.reserve(need);
+    for (std::size_t i = feedSize; i < ranked.size() && promote.size() < need; ++i) {
+        if (isExplorationLabeled(ranked[i])) {
+            promote.push_back(i);
+        }
+    }
+    // E: lowest-ranked non-exploration items in the prefix (walk the prefix from the back).
+    std::vector<char> evicted(ranked.size(), 0);
+    std::size_t evictedCount = 0;
+    for (std::size_t i = feedSize; i-- > 0 && evictedCount < need;) {
+        if (!isExplorationLabeled(ranked[i])) {
+            evicted[i] = 1;
+            ++evictedCount;
+        }
+    }
+    std::vector<char> promoted(ranked.size(), 0);
+    for (std::size_t i : promote) {
+        promoted[i] = 1;
+    }
+
+    std::vector<Candidate> reordered;
+    reordered.reserve(ranked.size());
+    // Retained prefix (order preserved), then the promoted items (rank order)...
+    for (std::size_t i = 0; i < feedSize; ++i) {
+        if (!evicted[i]) {
+            reordered.push_back(std::move(ranked[i]));
+        }
+    }
+    for (std::size_t i : promote) {
+        reordered.push_back(std::move(ranked[i]));
+    }
+    // ...then the tail: evicted prefix items and un-promoted below-cut items, ascending rank.
+    for (std::size_t i = 0; i < ranked.size(); ++i) {
+        const bool alreadyUsed = (i < feedSize) ? (evicted[i] == 0) : (promoted[i] != 0);
+        if (!alreadyUsed) {
+            reordered.push_back(std::move(ranked[i]));
+        }
+    }
+    ranked = std::move(reordered);
+}
 
 RecommendationResponse Orchestrator::recommend(const User &user,
                                                const RecommendationRequest &request) {
@@ -155,7 +263,7 @@ RecommendationResponse Orchestrator::recommend(const User &user,
     for (MergedCandidate &m : pool) {
         Candidate c{};
         c.reelId = m.reelId;
-        c.source = m.sources.front(); // FIRST label in the first-seen union order.
+        c.source = representativeSource(m.sources); // Exploration wins the slot if present.
         c.retrievalDistance = m.retrievalDistance;
         c.retrievalSimilarity = m.retrievalSimilarity;
         c.rankingScore = 0.0f;
@@ -165,8 +273,12 @@ RecommendationResponse Orchestrator::recommend(const User &user,
     std::vector<Candidate> ranked = ranker_->rank(user, rankPool, request.requestTime);
     response.rankingLatencyMs = ranking.elapsedMs();
 
-    // --- Reranking stage = identity (no diversity yet). Measured (~0) for field completeness.
+    // --- Reranking stage: guaranteed exploration slots (Phase 8, TDD 12.7 task 3). Reorders the
+    // ranked pool in place so the feed prefix meets the exploration guarantee; inert unless an
+    // exploration source + non-zero guaranteedSlots were supplied and a gate fired. Diversity
+    // reranking lands in Phase 9.
     Stopwatch reranking;
+    applyExplorationGuarantee(ranked, feedSize);
     response.rerankingLatencyMs = reranking.elapsedMs();
 
     // --- Truncate to the feed size in the ranker's returned order; assign ranks 0..n-1, score =

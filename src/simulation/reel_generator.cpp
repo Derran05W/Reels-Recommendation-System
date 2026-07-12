@@ -51,7 +51,7 @@ float clamp01(double v) { return static_cast<float>(std::clamp(v, 0.0, 1.0)); }
 } // namespace
 
 std::vector<Reel> generateReels(const SimulationConfig &config, const std::vector<Topic> &topics,
-                                const std::vector<Creator> &creators, Rng &rng) {
+                                const std::vector<Creator> &creators, Rng &rng, uint32_t idOffset) {
     std::vector<Reel> reels;
     if (topics.empty() || creators.empty()) {
         return reels; // No topic or creator to attach a reel to; documented no-crash fallback.
@@ -63,7 +63,7 @@ std::vector<Reel> generateReels(const SimulationConfig &config, const std::vecto
 
     for (uint32_t i = 0; i < config.reels; ++i) {
         Reel r{}; // zero-initializes counters, scores, flags.
-        r.id = ReelId{i};
+        r.id = ReelId{idOffset + i};
 
         // Creator: uniform over all creators.
         const Creator &creator = creators[rng.uniformInt(creators.size())];

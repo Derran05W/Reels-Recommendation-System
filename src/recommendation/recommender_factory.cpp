@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "rr/recommendation/exact_vector_recommender.hpp"
+#include "rr/recommendation/hnsw_exploration_recommender.hpp"
 #include "rr/recommendation/hnsw_ranker_recommender.hpp"
 #include "rr/recommendation/hnsw_recommender.hpp"
 #include "rr/recommendation/popularity_recommender.hpp"
@@ -60,7 +61,7 @@ std::unique_ptr<Recommender> makeRecommender(RecommendationAlgorithm algorithm,
     case RecommendationAlgorithm::HnswRanker:
         return std::make_unique<HNSWRankerRecommender>(deps, std::move(rng));
     case RecommendationAlgorithm::HnswRankerExploration:
-        throwUnimplemented(algorithm, 8); // epsilon-greedy exploration
+        return std::make_unique<HNSWExplorationRecommender>(deps, std::move(rng));
     case RecommendationAlgorithm::HnswRankerDiversity:
         throwUnimplemented(algorithm, 9); // diversity reranking
     }

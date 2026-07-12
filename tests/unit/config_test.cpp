@@ -24,7 +24,11 @@ TEST(ConfigTest, SimulationOverrides) {
                 {"creators", 3},
                 {"topics", 8},
                 {"dimensions", 128},
-                {"interactions_per_user", 11}}}};
+                {"interactions_per_user", 11},
+                {"new_users", 50},
+                {"new_users_at", 4},
+                {"new_reels", 60},
+                {"new_reels_at", 6}}}};
     auto c = j.get<ExperimentConfig>();
     EXPECT_EQ(c.simulation.seed, 7u);
     EXPECT_EQ(c.simulation.users, 5u);
@@ -33,6 +37,17 @@ TEST(ConfigTest, SimulationOverrides) {
     EXPECT_EQ(c.simulation.topics, 8u);
     EXPECT_EQ(c.simulation.dimensions, 128u);
     EXPECT_EQ(c.simulation.interactionsPerUser, 11u);
+    EXPECT_EQ(c.simulation.newUsers, 50u);
+    EXPECT_EQ(c.simulation.newUsersAt, 4u);
+    EXPECT_EQ(c.simulation.newReels, 60u);
+    EXPECT_EQ(c.simulation.newReelsAt, 6u);
+}
+
+TEST(ConfigTest, InjectionDefaultsDisabled) {
+    // Phase 8 mid-simulation injection is opt-in: default counts are 0 (no injection).
+    SimulationConfig def;
+    EXPECT_EQ(def.newUsers, 0u);
+    EXPECT_EQ(def.newReels, 0u);
 }
 
 TEST(ConfigTest, AllBlocksParse) {
@@ -62,7 +77,11 @@ TEST(ConfigTest, AllBlocksParse) {
           {"session_lambda", 0.88},
           {"long_term_weight", 0.7},
           {"session_weight", 0.3}}},
-        {"exploration", {{"enabled", false}, {"epsilon", 0.1}}},
+        {"exploration",
+         {{"enabled", false},
+          {"epsilon", 0.1},
+          {"fresh_window_seconds", 100000.0},
+          {"guaranteed_slots", 3}}},
         {"diversity",
          {{"enabled", false}, {"max_per_creator", 3}, {"max_per_topic", 5}, {"mmr_lambda", 0.5}}},
     };
@@ -83,6 +102,8 @@ TEST(ConfigTest, AllBlocksParse) {
     EXPECT_DOUBLE_EQ(c.learning.sessionWeight, 0.3);
     EXPECT_FALSE(c.exploration.enabled);
     EXPECT_DOUBLE_EQ(c.exploration.epsilon, 0.1);
+    EXPECT_DOUBLE_EQ(c.exploration.freshWindowSeconds, 100000.0);
+    EXPECT_EQ(c.exploration.guaranteedSlots, 3u);
     EXPECT_FALSE(c.diversity.enabled);
     EXPECT_EQ(c.diversity.maxPerCreator, 3u);
     EXPECT_DOUBLE_EQ(c.diversity.mmrLambda, 0.5);

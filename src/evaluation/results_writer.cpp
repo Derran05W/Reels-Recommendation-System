@@ -46,9 +46,13 @@ const char *kRegretUnitsNote =
     "the monotone core of the reward (TDD 10.1/10.5).";
 
 const char *kBaselineFlagsNote =
-    "Baseline requests set enableExploration=false and enableDiversity=false; candidateLimit = "
-    "recommendation.vectorCandidates; requestTime = simulator logical clock; sessionId = the most "
-    "recent interaction's session (SessionId{0} before any interaction).";
+    "Requests set enableExploration = exploration.enabled (config-driven since Phase 8; no "
+    "existing "
+    "recommender reads it, so it is inert for every non-exploration algorithm) and "
+    "enableDiversity=false; candidateLimit = recommendation.vectorCandidates; requestTime = "
+    "simulator logical clock; sessionId = the most recent interaction's session (SessionId{0} "
+    "before "
+    "any interaction).";
 
 const char *kRetrievalNote =
     "Live retrieval quality (TDD 18.1) on a Bernoulli(retrieval_sample_rate) subset of requests: "
@@ -63,6 +67,21 @@ const char *kRetrievalNotApplicableNote =
     "The algorithm is not vector-based (retrievalIndex() == nullptr), so no live retrieval metrics "
     "are computed; retrieval_metrics.csv is still written with zero-sample rows for a uniform "
     "layout.";
+
+const char *kColdStartNote =
+    "Mid-simulation injection (Phase 8, TDD 18.5). Entities are injected at the START of their "
+    "configured 0-based round; on a shared round REELS are injected before USERS. Injected users "
+    "start from the run-START frozen cold-start prior (TDD 11.1) and receive requests from their "
+    "injection round onward (their cold-start window). new_user_regret.first_N is the POOLED mean "
+    "oracle regret over all injected users' first N impressions (-1 if none reached N); regret is "
+    "in "
+    "true-affinity units (see oracle note). target_reward is the run's pre-injection mean reward "
+    "per "
+    "impression (impressions in rounds before new_users_at); interactions_to_target_reward is the "
+    "smallest 1-based impression count K at which injected users' cumulative mean reward reaches "
+    "the "
+    "target (-1 if undefined or not reached within the first 100 impressions). Curves are in "
+    "new_user_curve.csv / new_reel_exposure.csv; all values are deterministic.";
 
 // p50/p95/p99/mean/max/samples of a LatencyStats as a JSON object (wall-clock, D9).
 nlohmann::json latencyJson(const LatencyStats &l) {
@@ -126,6 +145,30 @@ void ResultsWriter::writeSummaryJson(const ExperimentResult &result) {
         {"recall_at_50", result.retrievalRecallAt50},
         {"mean_distance_error", result.retrievalDistanceError},
         {"note", result.retrievalApplicable ? kRetrievalNote : kRetrievalNotApplicableNote}};
+
+    // Cold-start / injection block (Phase 8, TDD 18.5): PRESENT only when injection is configured,
+    // so a non-configured run's summary.json carries no `cold_start` key (byte-identical to a
+    // pre-Phase-8 run's non-timing content).
+    if (result.coldStart.configured) {
+        const ColdStartReport &c = result.coldStart;
+        j["cold_start"] = {{"new_users", c.newUsers},
+                           {"new_users_at", c.newUsersAt},
+                           {"new_reels", c.newReels},
+                           {"new_reels_at", c.newReelsAt},
+                           {"new_user_regret",
+                            {{"first_10", c.meanRegretFirst10},
+                             {"first_25", c.meanRegretFirst25},
+                             {"first_50", c.meanRegretFirst50},
+                             {"first_100", c.meanRegretFirst100}}},
+                           {"target_reward_defined", c.targetDefined},
+                           {"target_reward", c.targetReward},
+                           {"interactions_to_target_reward", c.interactionsToTargetReward},
+                           {"new_reel_exposure",
+                            {{"total_injected_impressions", c.totalInjectedImpressions},
+                             {"distinct_injected_exposed", c.distinctInjectedExposed},
+                             {"share_of_all_impressions", c.injectedImpressionShare}}},
+                           {"note", kColdStartNote}};
+    }
 
     j["notes"] = {{"learning", result.learningEnabled ? kLearningEnabledNote : kLearningFrozenNote},
                   {"baseline_flags", kBaselineFlagsNote}};
@@ -215,6 +258,31 @@ void ResultsWriter::writeLatencyMetricsCsv(const ExperimentResult &result) {
     row("reranking", result.rerankingLatency);
 }
 
+void ResultsWriter::writeNewUserCurveCsv(const ExperimentResult &result) {
+    // New-user cold-start curve (Phase 8, TDD 18.5): per per-user impression index, the pooled mean
+    // reward and mean oracle regret over INJECTED users. Deterministic (num() fixed precision);
+    // header-only when no injected user reached any tracked impression index.
+    std::ofstream csv(result.directory / "new_user_curve.csv");
+    csv << "impression_index,users_at_index,mean_reward,mean_regret\n";
+    for (const NewUserCurvePoint &p : result.coldStart.newUserCurve) {
+        csv << p.impressionIndex << ',' << p.usersAtIndex << ',' << num(p.meanReward) << ','
+            << num(p.meanRegret) << '\n';
+    }
+}
+
+void ResultsWriter::writeNewReelExposureCsv(const ExperimentResult &result) {
+    // New-reel exposure (Phase 8, TDD 18.5): per round, impressions on injected reels with running
+    // totals, cumulative distinct injected reels exposed, and this round's share of all
+    // impressions. Deterministic. One row per round.
+    std::ofstream csv(result.directory / "new_reel_exposure.csv");
+    csv << "round,injected_impressions,injected_impressions_cum,distinct_injected_exposed_cum,"
+           "share_of_round_impressions\n";
+    for (const NewReelExposurePoint &p : result.coldStart.newReelExposure) {
+        csv << p.round << ',' << p.injectedImpressions << ',' << p.injectedImpressionsCum << ','
+            << p.distinctInjectedExposedCum << ',' << num(p.shareOfRoundImpressions) << '\n';
+    }
+}
+
 void ResultsWriter::writeAll(const ExperimentResult &result, const RunMetadata &meta) {
     writeConfigJson(result);
     writeSummaryJson(result);
@@ -223,6 +291,12 @@ void ResultsWriter::writeAll(const ExperimentResult &result, const RunMetadata &
     writeLearningCurveCsv(result);
     writeRegretCurveCsv(result);
     writeLatencyMetricsCsv(result);
+    // Phase 8 injection files: written ONLY when injection is configured, so a normal run's output
+    // directory is byte-for-byte a pre-Phase-8 run's (no extra files).
+    if (result.coldStart.configured) {
+        writeNewUserCurveCsv(result);
+        writeNewReelExposureCsv(result);
+    }
     writeMetadataJson(result.directory, meta);
 }
 

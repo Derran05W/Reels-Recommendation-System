@@ -49,13 +49,18 @@ void to_json(json &j, const SimulationConfig &c) {
              {"creators", c.creators},
              {"topics", c.topics},
              {"dimensions", c.dimensions},
-             {"interactions_per_user", c.interactionsPerUser}};
+             {"interactions_per_user", c.interactionsPerUser},
+             {"new_users", c.newUsers},
+             {"new_users_at", c.newUsersAt},
+             {"new_reels", c.newReels},
+             {"new_reels_at", c.newReelsAt}};
 }
 
 void from_json(const json &j, SimulationConfig &c) {
-    ensureKnownKeys(
-        j, "simulation",
-        {"seed", "users", "reels", "creators", "topics", "dimensions", "interactions_per_user"});
+    ensureKnownKeys(j, "simulation",
+                    {"seed", "users", "reels", "creators", "topics", "dimensions",
+                     "interactions_per_user", "new_users", "new_users_at", "new_reels",
+                     "new_reels_at"});
     readKey(j, "seed", c.seed);
     readKey(j, "users", c.users);
     readKey(j, "reels", c.reels);
@@ -63,6 +68,10 @@ void from_json(const json &j, SimulationConfig &c) {
     readKey(j, "topics", c.topics);
     readKey(j, "dimensions", c.dimensions);
     readKey(j, "interactions_per_user", c.interactionsPerUser);
+    readKey(j, "new_users", c.newUsers);
+    readKey(j, "new_users_at", c.newUsersAt);
+    readKey(j, "new_reels", c.newReels);
+    readKey(j, "new_reels_at", c.newReelsAt);
 }
 
 void to_json(json &j, const RecommendationConfig &c) {
@@ -162,13 +171,19 @@ void from_json(const json &j, LearningConfig &c) {
 }
 
 void to_json(json &j, const ExplorationConfig &c) {
-    j = json{{"enabled", c.enabled}, {"epsilon", c.epsilon}};
+    j = json{{"enabled", c.enabled},
+             {"epsilon", c.epsilon},
+             {"fresh_window_seconds", c.freshWindowSeconds},
+             {"guaranteed_slots", c.guaranteedSlots}};
 }
 
 void from_json(const json &j, ExplorationConfig &c) {
-    ensureKnownKeys(j, "exploration", {"enabled", "epsilon"});
+    ensureKnownKeys(j, "exploration",
+                    {"enabled", "epsilon", "fresh_window_seconds", "guaranteed_slots"});
     readKey(j, "enabled", c.enabled);
     readKey(j, "epsilon", c.epsilon);
+    readKey(j, "fresh_window_seconds", c.freshWindowSeconds);
+    readKey(j, "guaranteed_slots", c.guaranteedSlots);
 }
 
 void to_json(json &j, const DiversityConfig &c) {

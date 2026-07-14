@@ -1,0 +1,18 @@
+{
+  "experiment_id": "hnsw_retrieval-seed42-20260714-015400",
+  "name": "hnsw_retrieval",
+  "seed": 42,
+  "dimensions": [64,128],
+  "vector_counts": [100000],
+  "m_values": [16],
+  "ef_construction_values": [200],
+  "ef_search_values": [16,32,64,128,256],
+  "k_values": [10,50,200,500],
+  "num_queries": 1000,
+  "warmup_queries": 10,
+  "data_distribution": "clustered",
+  "clustered_query_source": "reels",
+  "count_distances": false,
+  "distance_metric": "euclidean_on_unit_vectors (cosine-equivalent, D3)",
+  "embedding_generation": "topic-clustered reels via rr::generateDataset (Phase 2, TDD 9.2)"
+}

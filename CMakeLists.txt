@@ -46,6 +46,7 @@ add_library(rr_core STATIC
     src/infrastructure/random.cpp
     src/infrastructure/logger.cpp
     src/infrastructure/config.cpp
+    src/infrastructure/process_stats.cpp
 )
 target_include_directories(rr_core PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(rr_core PUBLIC nlohmann_json::nlohmann_json)

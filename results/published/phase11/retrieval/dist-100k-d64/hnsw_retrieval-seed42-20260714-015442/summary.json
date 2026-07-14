@@ -1,0 +1,59 @@
+{
+  "experiment_id": "hnsw_retrieval-seed42-20260714-015442",
+  "data_distribution": "random",
+  "count_distances": true,
+  "total_sweep_wall_ms": 104653.8,
+  "total_rows": 60,
+  "per_size": [
+    {
+      "vector_count": 100000,
+      "recall_at_10_min": 0.0721,
+      "recall_at_10_max": 0.9713,
+      "query_p50_ms_min": 0.021000,
+      "query_p50_ms_max": 1.203688,
+      "insert_throughput_min": 2872.7,
+      "insert_throughput_max": 7039.2
+    }
+  ],
+  "per_build": [
+    {
+      "dimensions": 64,
+      "vector_count": 100000,
+      "ef_construction": 200,
+      "m": 8,
+      "build_time_ms": 14206.2,
+      "insert_throughput_per_sec": 7039.2,
+      "max_graph_level": 5,
+      "memory_delta_mb": 59.5,
+      "peak_rss_mb": 123.3,
+      "recall_at_10_ef16": 0.0721,
+      "recall_at_10_ef256": 0.5428
+    },
+    {
+      "dimensions": 64,
+      "vector_count": 100000,
+      "ef_construction": 200,
+      "m": 16,
+      "build_time_ms": 23654.4,
+      "insert_throughput_per_sec": 4227.5,
+      "max_graph_level": 4,
+      "memory_delta_mb": 23.0,
+      "peak_rss_mb": 141.5,
+      "recall_at_10_ef16": 0.1846,
+      "recall_at_10_ef256": 0.8453
+    },
+    {
+      "dimensions": 64,
+      "vector_count": 100000,
+      "ef_construction": 200,
+      "m": 32,
+      "build_time_ms": 34810.8,
+      "insert_throughput_per_sec": 2872.7,
+      "max_graph_level": 3,
+      "memory_delta_mb": 47.6,
+      "peak_rss_mb": 189.1,
+      "recall_at_10_ef16": 0.3565,
+      "recall_at_10_ef256": 0.9713
+    }
+  ]
+}

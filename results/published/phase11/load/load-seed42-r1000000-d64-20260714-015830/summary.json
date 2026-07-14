@@ -1,0 +1,26 @@
+{
+  "experiment_id": "load-seed42-r1000000-d64-20260714-015830",
+  "algorithm": "hnsw_ranker_diversity",
+  "reels": 1000000,
+  "users": 100000,
+  "dimensions": 64,
+  "active_reels_indexed": 1000000,
+  "index_build_seconds": 198.195,
+  "index_insert_per_sec": 5045.5,
+  "peak_rss_mb": 2042.17,
+  "warm_state": {
+    "est_hidden_mean_cosine": 0.4488,
+    "est_hidden_target_cosine": 0.45,
+    "seen_reels_per_user": 100,
+    "creator_affinity_per_user": 30,
+    "recent_interactions_per_user": 20,
+    "note": "synthetic warm state; recommender never reads HiddenUserState (D11)"
+  },
+  "cells": [
+    {"threads": 1, "rps": 37.3, "e2e_p50_ms": 15.2574, "e2e_p95_ms": 43.8930, "e2e_p99_ms": 44.7324, "retrieval_p95_ms": 43.5752, "ranking_p95_ms": 0.1862, "rerank_p95_ms": 0.0298, "cpu_utilization_pct": 99.9},
+    {"threads": 2, "rps": 65.4, "e2e_p50_ms": 17.6722, "e2e_p95_ms": 52.2749, "e2e_p99_ms": 53.4283, "retrieval_p95_ms": 51.9424, "ranking_p95_ms": 0.1981, "rerank_p95_ms": 0.0315, "cpu_utilization_pct": 199.7},
+    {"threads": 4, "rps": 91.0, "e2e_p50_ms": 27.1968, "e2e_p95_ms": 78.9677, "e2e_p99_ms": 84.7953, "retrieval_p95_ms": 78.5812, "ranking_p95_ms": 0.2387, "rerank_p95_ms": 0.0382, "cpu_utilization_pct": 396.8},
+    {"threads": 8, "rps": 134.1, "e2e_p50_ms": 35.7996, "e2e_p95_ms": 108.1163, "e2e_p99_ms": 114.8257, "retrieval_p95_ms": 107.5513, "ranking_p95_ms": 0.5315, "rerank_p95_ms": 0.0720, "cpu_utilization_pct": 791.1},
+    {"threads": 10, "rps": 144.1, "e2e_p50_ms": 42.6389, "e2e_p95_ms": 125.3132, "e2e_p99_ms": 134.5548, "retrieval_p95_ms": 124.6218, "ranking_p95_ms": 0.5778, "rerank_p95_ms": 0.0767, "cpu_utilization_pct": 977.7}
+  ]
+}

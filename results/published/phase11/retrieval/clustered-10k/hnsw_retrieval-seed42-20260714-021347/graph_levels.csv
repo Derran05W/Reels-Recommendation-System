@@ -1,0 +1,2 @@
+vector_count,m,ef_construction,max_graph_level,build_time_ms,insert_throughput_per_sec,memory_delta_mb,level_distribution,dimensions,degree_histogram_level0,peak_rss_mb
+10000,16,200,3,528.865,18908.43,7.094,9367;588;41;4,64,1;0;1;11;33;79;155;260;397;544;625;734;756;744;719;522;459;332;265;216;156;152;135;125;106;115;97;117;95;103;130;258;1558,21.62

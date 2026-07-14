@@ -1,0 +1,33 @@
+{
+  "experiment_id": "hnsw_retrieval-seed42-20260714-021347",
+  "data_distribution": "clustered",
+  "count_distances": false,
+  "total_sweep_wall_ms": 2117.6,
+  "total_rows": 20,
+  "per_size": [
+    {
+      "vector_count": 10000,
+      "recall_at_10_min": 0.8926,
+      "recall_at_10_max": 0.9653,
+      "query_p50_ms_min": 0.008792,
+      "query_p50_ms_max": 0.099854,
+      "insert_throughput_min": 18908.4,
+      "insert_throughput_max": 18908.4
+    }
+  ],
+  "per_build": [
+    {
+      "dimensions": 64,
+      "vector_count": 10000,
+      "ef_construction": 200,
+      "m": 16,
+      "build_time_ms": 528.9,
+      "insert_throughput_per_sec": 18908.4,
+      "max_graph_level": 3,
+      "memory_delta_mb": 7.1,
+      "peak_rss_mb": 21.6,
+      "recall_at_10_ef16": 0.8926,
+      "recall_at_10_ef256": 0.9653
+    }
+  ]
+}

@@ -27,7 +27,22 @@ Example:
 This script only reads result CSV/JSON files and writes PNGs to --out; it
 contains no simulation logic (design decision D15).
 
-Produces up to four PNGs in --out, skipping (with a one-line stderr note) any
+Also produces Phase 11 benchmark plots when a result dir (or a parent of several) contains
+retrieval_metrics.csv (from apps/benchmark_retrieval) and/or load_metrics.csv (from
+apps/benchmark_recommender), found by recursive glob and concatenated:
+
+  recall_vs_efsearch_*.png  Recall@10 vs efSearch, one line per M, one figure per
+                            (vector_count, dimensions, data_distribution, ef_construction).
+  recall_vs_latency_*.png   Recall@10 vs query p95 latency pareto scatter, colored by M,
+                            each point annotated with its efSearch; one figure per
+                            (vector_count, dimensions, data_distribution). Distance-counting
+                            rows (distance_comps_per_query >= 0, inflated latency) are excluded.
+  throughput_vs_threads.png recommendations/second vs client threads, one line per
+                            (corpus_reels, dimensions), from load_metrics.csv.
+  p99_vs_corpus.png         end-to-end and retrieval p99 vs corpus size at the max thread count
+                            present, from load_metrics.csv.
+
+Produces up to four simulation PNGs in --out, skipping (with a one-line stderr note) any
 plot whose required inputs are missing across every run:
 
   reward_curve.png       mean_reward_per_impression vs. interactions_per_user,
@@ -140,6 +155,70 @@ def load_run(directory: Path, label: str, color: tuple) -> RunData:
         warn(f"{label}: config.json missing or unreadable")
 
     return RunData(label, directory, color, learning, regret, summary, config)
+
+
+@dataclass
+class BenchmarkData:
+    """Benchmark result frames for one result-dir argument (Phase 11 retrieval/load sweeps).
+
+    Distinct from RunData (simulation curves): a benchmark result dir holds
+    retrieval_metrics.csv (from apps/benchmark_retrieval) and/or load_metrics.csv (from
+    apps/benchmark_recommender). Either may be absent; the dependent plots warn-skip.
+    """
+
+    label: str
+    directory: Path
+    retrieval: Optional[pd.DataFrame]
+    load: Optional[pd.DataFrame]
+
+
+def load_benchmark(directory: Path, label: str) -> BenchmarkData:
+    """Load retrieval_metrics.csv / load_metrics.csv from a benchmark result dir.
+
+    The CSVs are found by recursive glob, so `directory` may be either a single experiment-id dir
+    (…/hnsw_retrieval-seed42-…/) or a parent that contains several (…/results/phase11/retrieval/);
+    all matches are concatenated so multi-pass sweeps can be faceted in one call.
+    """
+    if not directory.is_dir():
+        warn(f"{label}: result directory not found: {directory}")
+        return BenchmarkData(label, directory, None, None)
+
+    def _concat(name: str) -> Optional[pd.DataFrame]:
+        frames = []
+        for path in sorted(directory.rglob(name)):
+            df = _read_csv(path)
+            if df is not None and not df.empty:
+                frames.append(df)
+        if not frames:
+            return None
+        return pd.concat(frames, ignore_index=True)
+
+    retrieval = _concat("retrieval_metrics.csv")
+    load = _concat("load_metrics.csv")
+    if retrieval is None and load is None:
+        warn(f"{label}: no retrieval_metrics.csv or load_metrics.csv under {directory}")
+    return BenchmarkData(label, directory, retrieval, load)
+
+
+def _combined_retrieval(benchruns: list[BenchmarkData]) -> Optional[pd.DataFrame]:
+    frames = [b.retrieval for b in benchruns if b.retrieval is not None]
+    if not frames:
+        return None
+    df = pd.concat(frames, ignore_index=True)
+    # data_distribution / distance_comps_per_query are Phase 11 additions; default gracefully so
+    # older (Phase 1) retrieval_metrics.csv files still plot.
+    if "data_distribution" not in df.columns:
+        df["data_distribution"] = "random"
+    if "distance_comps_per_query" not in df.columns:
+        df["distance_comps_per_query"] = -1.0
+    return df
+
+
+def _combined_load(benchruns: list[BenchmarkData]) -> Optional[pd.DataFrame]:
+    frames = [b.load for b in benchruns if b.load is not None]
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)
 
 
 def maybe_legend(ax, **kwargs) -> None:
@@ -335,6 +414,130 @@ def plot_drift_recovery(runs: list[RunData], outdir: Path, cli_drift_at: Optiona
     return True
 
 
+# --- Phase 11 benchmark plots (retrieval_metrics.csv / load_metrics.csv) ----------------------
+#
+# Each returns the number of PNGs written (0 => nothing usable, warn-skipped), summed in main().
+# Retrieval plots facet by grid axes so "lines per M" stays unambiguous; latency plots exclude
+# distance-counting rows (distance_comps_per_query >= 0), whose latency is instrumentation-inflated.
+
+
+def plot_recall_vs_efsearch(retr: Optional[pd.DataFrame], outdir: Path) -> int:
+    required = {"k", "ef_search", "m", "recall_at_k", "vector_count", "dimensions",
+                "ef_construction"}
+    if retr is None or not required <= set(retr.columns):
+        warn("skipping recall_vs_efsearch: no retrieval_metrics.csv with the required columns")
+        return 0
+    k10 = retr[retr["k"] == 10]
+    if k10.empty:
+        warn("skipping recall_vs_efsearch: no k=10 rows in retrieval_metrics.csv")
+        return 0
+
+    written = 0
+    # One figure per (vector_count, dimensions, data_distribution, ef_construction) so each line is
+    # a clean M-sweep at a fixed efConstruction.
+    for (vc, dim, dist, efc), g in k10.groupby(
+        ["vector_count", "dimensions", "data_distribution", "ef_construction"]
+    ):
+        fig, ax = plt.subplots(figsize=FIGSIZE)
+        for i, (m, gm) in enumerate(sorted(g.groupby("m"))):
+            gm = gm.sort_values("ef_search")
+            ax.plot(gm["ef_search"], gm["recall_at_k"], marker="o",
+                    color=COLOR_CYCLE[i % len(COLOR_CYCLE)], label=f"M={m}")
+        ax.set_xscale("log", base=2)
+        ax.axhline(0.90, color="gray", linestyle=":", linewidth=1)  # TDD 27 Recall@10 target.
+        out = outdir / f"recall_vs_efsearch_vc{vc}_d{dim}_{dist}_efc{efc}.png"
+        finish_figure(fig, ax, out, "efSearch (log2)", "Recall@10",
+                      f"Recall@10 vs efSearch  (N={vc}, d={dim}, {dist}, efC={efc})")
+        written += 1
+    return written
+
+
+def plot_recall_vs_latency(retr: Optional[pd.DataFrame], outdir: Path) -> int:
+    required = {"k", "recall_at_k", "query_p95_ms", "m", "ef_search", "vector_count", "dimensions"}
+    if retr is None or not required <= set(retr.columns):
+        warn("skipping recall_vs_latency: no retrieval_metrics.csv with the required columns")
+        return 0
+    df = retr[retr["k"] == 10]
+    # Latency hygiene: drop distance-counting rows (flagged distance_comps_per_query >= 0) whose
+    # p95 includes atomic-increment overhead.
+    if "distance_comps_per_query" in df.columns:
+        df = df[df["distance_comps_per_query"] < 0]
+    if df.empty:
+        warn("skipping recall_vs_latency: no clean-latency k=10 rows")
+        return 0
+
+    written = 0
+    for (vc, dim, dist), g in df.groupby(["vector_count", "dimensions", "data_distribution"]):
+        fig, ax = plt.subplots(figsize=FIGSIZE)
+        for i, (m, gm) in enumerate(sorted(g.groupby("m"))):
+            ax.scatter(gm["query_p95_ms"], gm["recall_at_k"],
+                       color=COLOR_CYCLE[i % len(COLOR_CYCLE)], label=f"M={m}", zorder=3)
+            for _, row in gm.iterrows():
+                ax.annotate(f"ef{int(row['ef_search'])}",
+                            (row["query_p95_ms"], row["recall_at_k"]),
+                            textcoords="offset points", xytext=(3, 3), fontsize=6)
+        ax.axhline(0.90, color="gray", linestyle=":", linewidth=1)
+        out = outdir / f"recall_vs_latency_vc{vc}_d{dim}_{dist}.png"
+        finish_figure(fig, ax, out, "query p95 latency (ms)", "Recall@10",
+                      f"Recall@10 vs p95 latency  (N={vc}, d={dim}, {dist})")
+        written += 1
+    return written
+
+
+def plot_throughput_vs_threads(load: Optional[pd.DataFrame], outdir: Path) -> int:
+    required = {"threads", "rps", "corpus_reels", "dimensions"}
+    if load is None or not required <= set(load.columns):
+        warn("skipping throughput_vs_threads: no load_metrics.csv with the required columns")
+        return 0
+
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    plotted = 0
+    for i, ((corpus, dim), g) in enumerate(sorted(load.groupby(["corpus_reels", "dimensions"]))):
+        g = g.sort_values("threads")
+        ax.plot(g["threads"], g["rps"], marker="o",
+                color=COLOR_CYCLE[i % len(COLOR_CYCLE)], label=f"N={corpus}, d={dim}")
+        plotted += 1
+    if plotted == 0:
+        plt.close(fig)
+        warn("skipping throughput_vs_threads: no usable load_metrics.csv rows")
+        return 0
+    finish_figure(fig, ax, outdir / "throughput_vs_threads.png", "client threads",
+                  "recommendations / second", "Throughput vs Concurrent Clients")
+    return 1
+
+
+def plot_p99_vs_corpus(load: Optional[pd.DataFrame], outdir: Path) -> int:
+    required = {"corpus_reels", "threads", "e2e_p99_ms", "retrieval_p99_ms"}
+    if load is None or not required <= set(load.columns):
+        warn("skipping p99_vs_corpus: no load_metrics.csv with the required columns")
+        return 0
+    max_threads = load["threads"].max()
+    at_max = load[load["threads"] == max_threads]
+    has_dim = "dimensions" in at_max.columns
+    groups = at_max.groupby("dimensions") if has_dim else [(None, at_max)]
+
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    plotted = 0
+    for i, (dim, g) in enumerate(groups):
+        g = g.sort_values("corpus_reels")
+        color = COLOR_CYCLE[i % len(COLOR_CYCLE)]
+        suffix = f" (d={dim})" if dim is not None else ""
+        ax.plot(g["corpus_reels"], g["e2e_p99_ms"], marker="o", color=color,
+                linestyle="-", label=f"end-to-end p99{suffix}")
+        ax.plot(g["corpus_reels"], g["retrieval_p99_ms"], marker="s", color=color,
+                linestyle="--", label=f"retrieval p99{suffix}")
+        plotted += 1
+    if plotted == 0:
+        plt.close(fig)
+        warn("skipping p99_vs_corpus: no usable load_metrics.csv rows")
+        return 0
+    ax.set_xscale("log")
+    finish_figure(fig, ax, outdir / "p99_vs_corpus.png", "corpus size (reels)",
+                  "p99 latency (ms)",
+                  f"Tail Latency vs Corpus Size  (threads={int(max_threads)})")
+    return 1
+
+
 def derive_labels(labels_arg: Optional[str], dirs: list[Path]) -> list[str]:
     if labels_arg:
         parts = [p.strip() for p in labels_arg.split(",")]
@@ -384,10 +587,21 @@ def main(argv=None) -> int:
     runs = [load_run(d, label, color) for d, label, color in zip(dirs, labels, colors)]
 
     written = 0
+    # Simulation curves (learning_curve.csv / regret_curve.csv). Each warn-skips when absent.
     written += plot_reward_curve(runs, outdir)
     written += plot_alignment_curve(runs, outdir)
     written += plot_cumulative_regret(runs, outdir)
     written += plot_drift_recovery(runs, outdir, args.drift_at)
+
+    # Phase 11 benchmark plots (retrieval_metrics.csv / load_metrics.csv). Same dirs; a dir may hold
+    # simulation CSVs, benchmark CSVs, or (a parent dir) several benchmark subtrees. Each warn-skips.
+    benchruns = [load_benchmark(d, label) for d, label in zip(dirs, labels)]
+    retr = _combined_retrieval(benchruns)
+    load = _combined_load(benchruns)
+    written += plot_recall_vs_efsearch(retr, outdir)
+    written += plot_recall_vs_latency(retr, outdir)
+    written += plot_throughput_vs_threads(load, outdir)
+    written += plot_p99_vs_corpus(load, outdir)
 
     return 0 if written > 0 else 1
 

@@ -1,0 +1,35 @@
+{
+  "generated_at": "2026-07-14T01:56:32",
+  "tool": "benchmark_recommender (ReelRank Phase 11)",
+  "algorithm": "hnsw_ranker_diversity",
+  "git": {
+    "reel_rank_sha": "537d883d0a3cffb328f7b9f250c70509e04c4fd5",
+    "reel_rank_dirty": false,
+    "vector_db_sha": "17e434a3e741f702ffb8e0f00b0484676d988198",
+    "vector_db_dir": "/Users/derranw/vector-db"
+  },
+  "build": {
+    "type": "Release",
+    "compiler": "AppleClang 21.0.0.21000101",
+    "cxx_standard": 20
+  },
+  "hardware": {
+    "cpu_model": "Apple M5",
+    "logical_cores": 10,
+    "physical_cores": 10,
+    "ram_bytes": 25769803776,
+    "ram_gib": 24.0
+  },
+  "os": {
+    "sysname": "Darwin",
+    "release": "25.5.0",
+    "version": "Darwin Kernel Version 25.5.0: Mon Apr 27 20:39:29 PDT 2026; root:xnu-12377.121.6~2/RELEASE_ARM64_T8142",
+    "machine": "arm64"
+  },
+  "dataset": {
+    "reels": 10000,
+    "users": 1000,
+    "dimensions": 64
+  },
+  "thread_counts": [1,2,4,8,10]
+}

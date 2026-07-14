@@ -1,0 +1,8 @@
+concurrency_check: vectors=8000 dim=64 threads=8 searches/thread=500 k=100
+concurrency_check: built index (8000 vectors) in 14894.1 ms; index is now frozen (no further insert/setEfSearch)
+concurrency_check: 4000 concurrent const searches across 8 threads in 1604.31 ms
+  malformed results     : 0
+  determinism mismatches: 0
+  id checksum           : 15924678 (anti-DCE)
+concurrency_check: PASS — concurrent const search on the frozen index is well-formed and deterministic. Under -fsanitize=thread a clean exit (no race report) is the stronger proof of data-race freedom.
+CONCURRENCY_CHECK=PASS searches=4000 threads=8

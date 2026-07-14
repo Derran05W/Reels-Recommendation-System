@@ -1,0 +1,22 @@
+{
+  "experiment_id": "load-seed42-r100000-d64-20260714-015632",
+  "algorithm": "hnsw_ranker_diversity",
+  "seed": 42,
+  "reels": 100000,
+  "users": 10000,
+  "dimensions": 64,
+  "feed_size": 10,
+  "candidate_limit": 500,
+  "popular_candidates": 100,
+  "trending_candidates": 100,
+  "fresh_candidates": 100,
+  "creator_affinity_candidates": 100,
+  "exploration_candidates": 50,
+  "hnsw": {"m": 16, "ef_construction": 200, "ef_search": 64},
+  "epsilon": 0.05,
+  "guaranteed_slots": 2,
+  "diversity": {"enabled": true, "max_per_creator": 2, "max_per_topic": 3, "mmr_lambda": 0.75},
+  "warmup_requests_per_thread": 200,
+  "timed_requests_per_thread": 2000,
+  "thread_counts": [1,2,4,8,10]
+}

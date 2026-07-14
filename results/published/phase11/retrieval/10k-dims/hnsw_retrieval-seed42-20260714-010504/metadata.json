@@ -1,0 +1,50 @@
+{
+  "experiment_id": "hnsw_retrieval-seed42-20260714-010504",
+  "generated_at": "2026-07-14T01:06:20",
+  "tool": "benchmark_retrieval (ReelRank Phase 1, Phase 11 grid completion)",
+  "git": {
+    "reel_rank_sha": "537d883d0a3cffb328f7b9f250c70509e04c4fd5",
+    "reel_rank_dir": "/Users/derranw/reel-rank",
+    "reel_rank_dirty": false,
+    "vector_db_sha": "17e434a3e741f702ffb8e0f00b0484676d988198",
+    "vector_db_dir": "/Users/derranw/vector-db",
+    "note": "reel-rank SHA is the Phase 0 commit; Phase 1 work (this benchmark, the vindex adapters, the differential suite) is uncommitted, so the tree is dirty at benchmark time."
+  },
+  "build": {
+    "type": "Release",
+    "compiler": "AppleClang 21.0.0.21000101",
+    "cxx_standard": 20,
+    "release_flags": "-O3 -DNDEBUG -Wall -Wextra -Wpedantic -Werror"
+  },
+  "hardware": {
+    "cpu_model": "Apple M5",
+    "logical_cores": 10,
+    "physical_cores": 10,
+    "ram_bytes": 25769803776,
+    "ram_gib": 24.0
+  },
+  "os": {
+    "sysname": "Darwin",
+    "release": "25.5.0",
+    "version": "Darwin Kernel Version 25.5.0: Mon Apr 27 20:39:29 PDT 2026; root:xnu-12377.121.6~2/RELEASE_ARM64_T8142",
+    "machine": "arm64"
+  },
+  "execution": {
+    "threads_used": 1,
+    "note": "single-threaded benchmark (D13); logical_cores reported for provenance only"
+  },
+  "sweep": {
+    "seed": 42,
+    "dimensions": [32,64,128,256],
+    "vector_counts": [10000],
+    "m_values": [8,16,32],
+    "ef_construction_values": [200],
+    "ef_search_values": [16,32,64,128,256],
+    "k_values": [10,50,200,500],
+    "num_queries": 1000,
+    "data_distribution": "random",
+    "count_distances": false,
+    "total_sweep_wall_ms": 75580.9,
+    "subset_note": "Phase 11 package B completes the TDD 17.3 grid: dimensions, efConstruction, the 1,000,000 corpus, topic-clustered data, and level-0 degree histogram + distance-computations-per-query are all reachable via CLI flags. The DEFAULT invocation (no flags) reproduces the byte-compatible Phase 1 subset (dims {64}, efConstruction {200}, vector counts {10000,100000}, isotropic random data). The axes swept in THIS run are the arrays above."
+  }
+}

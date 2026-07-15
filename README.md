@@ -28,8 +28,8 @@ ranker, no service mesh, and the "ground truth" is a synthetic behaviour model, 
 (see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md)). The project is deliberately two repositories,
 telling a two-part story:
 
-- **[`vector-db`](../vector-db)** — the low-level ANN *infrastructure* (a from-scratch C++ HNSW
-  index). Consumed read-only; never modified by ReelRank.
+- **[`vector-db`](https://github.com/Derran05W/vector-db)** — the low-level ANN *infrastructure*
+  (a from-scratch C++ HNSW index). Consumed read-only; never modified by ReelRank.
 - **`reel-rank`** (this repo) — the *application*: a recommendation system and evaluation harness
   that puts that infrastructure to work on a realistic workflow.
 
@@ -89,6 +89,45 @@ Six candidate sources feed the merge stage; which ones are active depends on the
 `HiddenUserState` struct owned by the simulator, so "the recommender never reads hidden preference"
 is a compile-time guarantee, not a convention (design decision **D11**). The `hnsw_ranker_diversity`
 "complete initial system" wires all six sources; simpler algorithms use a subset.
+
+## The pipeline: from a reel to a viewer, and back
+
+The same system as a stage-by-stage flow — every step a reel passes through, with the algorithm
+doing the work at each one. All parameters are the shipped defaults; all timings measured
+(Apple M5, Release build, 100k reels). Stages 1–2 are the content path; 3–8 run per feed request;
+9–10 close the loop that makes the next request smarter.
+
+```mermaid
+flowchart TD
+    R["1 · A reel is born<br/>embedding = normalize(topicCentroid + creatorStyle + noise)<br/>unit vectors ⇒ Euclidean ordering ≡ cosine"]
+    IDX["2 · Indexed into the HNSW graph (vector-db)<br/>M=16 links · efConstruction=200 beam · reciprocal-neighbour pruning<br/>immutable after insert · engagement + trending counters registered"]
+    Q["3 · Viewer's query vector<br/>q = normalize(0.65·long-term + 0.35·session)<br/>cold start: global average preference — hidden truth is unreadable"]
+
+    subgraph SRC["4 · Candidate generation — six sources fan out"]
+        HNSW["HNSW vector search<br/>beam max(efSearch=64, k)<br/>top 500 · p50 0.13 ms"]
+        POP["Popular<br/>(eng + C·prior)/(impr + C)<br/>Bayesian smoothing, C=20"]
+        TR["Trending<br/>decayed engagement velocity<br/>half-life 6 h, rising only"]
+        CA["Creator affinity<br/>observable signals only<br/>follow +.25 · share +.15 · like +.10"]
+        FR["Fresh<br/>3-day recency window"]
+        EX["ε-greedy exploration<br/>ε=0.05 per slot<br/>random-fresh / underexposed / uncertain-topic"]
+    end
+
+    M["5 · Merge · dedup · filter<br/>dedup by reelId keeps all source labels · seen-filter · cap 500"]
+    RK["6 · WeightedRanker — score = Σ w_f · x_f over 11 features<br/>similarity .50 · quality .10 · freshness .08 (t½ 7 d) · trending .08 · popularity .07<br/>creator affinity .07 · session-topic .05 · duration .05 · exploration .05 · −repetition .15 · −fatigue .05"]
+    DV["7 · DiversityReranker<br/>hard caps: ≤2/creator · scaled topic cap · no consecutive same-topic<br/>MMR ordering: λ·rel − (1−λ)·maxSim, λ=0.75 · guaranteed ε-slots"]
+    F["8 · Feed — 10 items, ordered, explained<br/>e2e p95 4–12 ms @ 100k reels, 1–10 threads"]
+    B["9 · Viewer reacts (simulated ground truth; hidden state, compile-time isolated)<br/>z = 4·affinity + quality + 0.5·creatorMatch − durationPenalty + noise<br/>watch / skip / like / share / follow → reward r ∈ [−1, 1]"]
+    L["10 · Online preference learning<br/>u ← normalize((1−η)·u + η·r·v), η=0.02<br/>session = λ-decayed recompute over current session, λ=0.90"]
+
+    R --> IDX
+    IDX -->|"viewer opens the app"| Q
+    Q --> HNSW & POP & TR & CA & FR & EX
+    HNSW & POP & TR & CA & FR & EX --> M
+    M --> RK --> DV --> F
+    F -->|"watch · skip · like · share · follow"| B
+    B --> L
+    L -.->|"feedback loop — the next request queries the updated blend"| Q
+```
 
 ---
 
@@ -405,6 +444,13 @@ recall@10                0.877   HNSW vs exact ground truth
 feed diversity           3.49 topics / 6.61 creators, repetition 0.0  per feed
 ```
 
+**Observed variance across 3 consecutive runs (2026-07-15):** zero on every simulated metric —
+reward, affinity, alignment, recall, diversity, and every feed item, score, and per-feature
+contribution in the explanation view were identical to the digit. The only lines that differed
+were the temp-directory name and one wall-clock measurement (retrieval p95: 0.40 / 0.40 /
+0.41 ms). Timing is measurement; everything else is reproducible bit-for-bit — the determinism
+design doing exactly what it promises.
+
 ---
 
 ## Documentation
@@ -413,6 +459,9 @@ feed diversity           3.49 topics / 6.61 creators, repetition 0.0  per feed
   secondary question with a pointer to its experiment.
 - [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) — honest gaps, un-hit targets, deferred stretch goals.
 - [`docs/RESUME.md`](docs/RESUME.md) — the portfolio narrative, kept accurate to what was measured.
+- [`docs/design/`](docs/design/) — the pre-implementation design artifacts: the technical design
+  document, the 16 binding design decisions, the 13 session-sized phase plans, and the
+  phase-by-phase history with every deviation and known issue.
 
 ## Layout
 
@@ -423,7 +472,8 @@ feed diversity           3.49 topics / 6.61 creators, repetition 0.0  per feed
   `concurrency_check`
 - `tests/` — `unit`, `integration`, `property`, `differential` (one `reel_rank_tests` binary)
 - `scripts/` — Python (uv) analysis + plotting tooling and `demo.sh`
-- `docs/` — `RESULTS.md`, `LIMITATIONS.md`, `RESUME.md`
+- `docs/` — `RESULTS.md`, `LIMITATIONS.md`, `RESUME.md`, and `design/` (TDD, design decisions,
+  phase plans, phase history)
 - `results/published/` — curated, committed benchmark reports and `figures/` (rest of `results/` is
   gitignored)
 - `cmake/` — `vendor_vector_db.cmake` (the vector-db shadow build)

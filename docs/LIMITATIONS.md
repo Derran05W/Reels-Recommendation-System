@@ -11,8 +11,8 @@ three kinds, because they are not the same thing:
   designed (and in most cases structured so it can be added without an API change).
 
 Each item is traceable to the per-phase history (deviations and known issues recorded at every
-phase) in the sibling planning repository's `commit.md`, and to the published results under
-[`results/published/`](../results/published/) it concerns.
+phase) in [`docs/design/PHASE-HISTORY.md`](design/PHASE-HISTORY.md), and to the published results
+under [`results/published/`](../results/published/) it concerns.
 
 ---
 

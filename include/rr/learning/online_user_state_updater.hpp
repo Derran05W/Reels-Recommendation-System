@@ -28,7 +28,18 @@ namespace rr {
 //     (TDD 8.3). estimatedPreference is thus the CACHED effective preference, so
 //     rr::effectivePreference(user) keeps returning it by const reference.
 //
-// All three vectors remain unit-length after every apply (property-tested). Degenerate
+// Realism V2 (Phase 15, gated by `contentV2`): when contentV2 is true AND learning is enabled AND
+// the reel carries a modality embedding, apply() ALSO maintains the three estimated modality
+// preferences on User (visual/music/emotional, V2 TDD 5) with the SAME 11.2 rule at
+// LearningConfig.modalityRate, driven by the SAME observable reward, applied to the reel's
+// per-modality embeddings — est <- normalize((1 - eta_m) * est + eta_m * reward *
+// modalityEmbedding). An EMPTY estimate cold-starts to the first observed reel's modality direction
+// (mirroring 11.1's cold-start of the long-term vector to a prior; here the first observation,
+// there being no modality prior). These estimates feed the V2 ranking features; the candidate QUERY
+// stays semantic-only (D23). With contentV2 false (the default — every pre-Phase-15 call site) the
+// three modality estimates are never written and behaviour is byte-identical to V1 (D17).
+//
+// All maintained vectors remain unit-length after every apply (property-tested). Degenerate
 // normalizations (near-zero direction) fall back deterministically; the rules are documented at
 // their definitions in online_user_state_updater.cpp.
 //
@@ -36,13 +47,18 @@ namespace rr {
 // whole pipeline relies on) used to look up embeddings of past in-window interactions.
 class OnlineUserStateUpdater final : public UserStateUpdater {
   public:
-    OnlineUserStateUpdater(const std::vector<Reel> &reels, const LearningConfig &config);
+    // `contentV2` (Phase 15, defaulted false to keep every pre-Phase-15 call site V1-identical):
+    // gates the per-modality estimate maintenance above. The integrator flips the harness call site
+    // (experiment_runner.cpp) to pass config.realism.contentV2.
+    OnlineUserStateUpdater(const std::vector<Reel> &reels, const LearningConfig &config,
+                           bool contentV2 = false);
 
     void apply(User &user, const Reel &reel, const InteractionEvent &interaction) const override;
 
   private:
     const std::vector<Reel> &reels_;
     LearningConfig config_;
+    bool contentV2_ = false;
 };
 
 } // namespace rr

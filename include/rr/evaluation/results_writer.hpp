@@ -24,6 +24,15 @@ namespace rr {
 // `cold_start` block is added to summary.json. When injection is NOT configured, NONE of these
 // appear and every file is byte-identical to a pre-Phase-8 run (the regression contract).
 //
+// Phase 15 welfare additions (V2 TDD §6, D22): when realism.latent_reactions is on
+// (result.welfare.configured), TWO extra deterministic files are written - welfare_metrics.csv and
+// welfare_archetype_metrics.csv - plus a `metric_groups` block and extra keys in the `welfare`
+// block of summary.json (the four V2 §6 metric groups as SEPARATE blocks; no aggregate score). When
+// the gate is off NONE of these appear and every EXISTING V1 file/column is byte-identical (D17);
+// even gate-on, the existing V1 files/columns (recommendation_metrics.csv, diversity_metrics.csv,
+// learning_curve.csv, the V1 summary blocks) are UNCHANGED — the V2 signals live only in the new
+// files/blocks.
+//
 // Determinism (D8/TDD 24.6): every file EXCEPT latency_metrics.csv, metadata.json, and the
 // `timing` subsection of summary.json is byte-identical across two runs with the same seed. This
 // includes retrieval_metrics.csv and the two Phase-8 files: all come from deterministic
@@ -53,6 +62,16 @@ class ResultsWriter {
     // distinct_injected_exposed_cum, share_of_round_impressions.
     static void writeNewUserCurveCsv(const ExperimentResult &result);
     static void writeNewReelExposureCsv(const ExperimentResult &result);
+    // Phase 15 (V2 TDD §6, D22). Written by writeAll ONLY when result.welfare.configured (gate-on
+    // under realism.latent_reactions); exposed here for targeted tests. Deterministic.
+    //   welfare_metrics.csv: per round — round, impressions, mean_immediate_satisfaction,
+    //   mean_regret, satisfaction_per_minute, watch_minutes, comment_rate, save_rate,
+    //   profile_visit_rate, harmful_fatigue, platform_trust. (harmful_fatigue/platform_trust are
+    //   NOT-YET-MODELED placeholders, constant 0 — real in P16/P20.)
+    //   welfare_archetype_metrics.csv: per catalog archetype (index order) — archetype_index,
+    //   archetype_name, impressions, exposure_share, mean_immediate_satisfaction, mean_regret.
+    static void writeWelfareMetricsCsv(const ExperimentResult &result);
+    static void writeWelfareArchetypeMetricsCsv(const ExperimentResult &result);
 };
 
 } // namespace rr

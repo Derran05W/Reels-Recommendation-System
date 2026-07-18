@@ -20,6 +20,17 @@ struct User {
     Embedding longTermPreference;
     Embedding sessionPreference;
 
+    // --- Realism V2 recommender-visible modality estimates (V2 TDD 5, Phase 15) --------------
+    // Per-modality EMA estimates maintained by OnlineUserStateUpdater from OBSERVABLE reward
+    // only (mirroring the V1 11.2 rule, applied to the reel's modality embeddings), and only
+    // when realism.content_v2 is on — gate-off leaves them empty (D17). They feed the V2
+    // ranking features (modality-match); the candidate QUERY stays semantic-only (D23). These
+    // are estimates, never hidden truth (D11/D18); the serialization leak-audit allowlist
+    // covers them explicitly.
+    Embedding estimatedVisualPreference{};
+    Embedding estimatedMusicPreference{};
+    Embedding estimatedEmotionalPreference{};
+
     std::unordered_set<ReelId> seenReels;
     std::unordered_map<CreatorId, float> creatorAffinity;
 

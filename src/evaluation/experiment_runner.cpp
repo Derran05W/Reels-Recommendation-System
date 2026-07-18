@@ -20,6 +20,7 @@
 #include "rr/evaluation/cold_start.hpp"
 #include "rr/evaluation/diversity_metrics.hpp"
 #include "rr/evaluation/oracle.hpp"
+#include "rr/evaluation/oracle_satisfaction_recommender.hpp"
 #include "rr/evaluation/results_writer.hpp"
 #include "rr/evaluation/retrieval_evaluator.hpp"
 #include "rr/infrastructure/clock.hpp"
@@ -85,7 +86,7 @@ ExperimentResult ExperimentRunner::run() {
     // reel catalog; apply() runs after each Simulator::step below. It consumes no rng/clock, so
     // invoking it is stream-neutral (D8) - the recommender/behaviour/oracle streams are untouched.
     // When config.learning.enabled is false the updater is never invoked and estimates stay frozen.
-    const OnlineUserStateUpdater updater(ds.reels, config_.learning);
+    const OnlineUserStateUpdater updater(ds.reels, config_.learning, config_.realism.contentV2);
     const bool learningEnabled = config_.learning.enabled;
 
     // Scheduled hidden-preference drift (Phase 10, TDD 11.4). Constructed ONCE over the generated
@@ -120,8 +121,15 @@ ExperimentResult ExperimentRunner::run() {
             : Simulator(config_.behaviour, config_.reward, forkRng(seed, "behaviour"),
                         config_.learning.recentWindow, config_.ranking.trendingHalfLifeSeconds);
     RecommenderDeps deps{ds.reels, ds.users, config_};
+    // Phase 15: the oracle-satisfaction arm (V2 TDD 4.4 arm 4) reads hidden state, so it is
+    // constructed HERE under the evaluation carve-out (D18); the recommendation-side factory
+    // rejects it. All other algorithms go through the factory unchanged.
     std::unique_ptr<Recommender> recommender =
-        makeRecommender(config_.algorithm, deps, forkRng(seed, "recommender"));
+        config_.algorithm == RecommendationAlgorithm::OracleSatisfaction
+            ? std::make_unique<OracleSatisfactionRecommender>(
+                  config_, ds.reels, ds.users, ds.creators, ds.hiddenStates, ds.hiddenReelStates,
+                  forkRng(seed, "recommender"))
+            : makeRecommender(config_.algorithm, deps, forkRng(seed, "recommender"));
     Rng oracleRng = forkRng(seed, "oracle");
 
     // Live retrieval evaluation (TDD 18.1). Its own INDEPENDENT rng stream (D8) so adding it never
@@ -156,17 +164,16 @@ ExperimentResult ExperimentRunner::run() {
         double distErrorSum = 0.0;
     };
     std::vector<RetrievalAcc> retrievalByRound(rounds);
-    // Welfare accumulation (Phase 14, V2 TDD 4.3/6): per-round hidden satisfaction/regret sums
-    // from the latent stream, filled ONLY under realism.latent_reactions (evaluation carve-out,
-    // D18 — the latent never reaches any recommender-visible structure). Reduced into
-    // ExperimentResult::welfare (per-round + overall means) after the round loop and emitted as a
-    // gate-on-only summary block; the full four-group CSV framework is Phase 15.
-    struct WelfareAcc {
-        size_t impressions = 0;
-        double satisfactionSum = 0.0;
-        double regretSum = 0.0;
-    };
-    std::vector<WelfareAcc> welfareByRound(rounds);
+    // Hidden-user-welfare metric group (Phase 15, V2 TDD §6, D22): the welfare-group module
+    // accumulates the per-impression latent stream (satisfaction/regret) + observable watch time +
+    // the reel's hidden archetype index, all under the D18 EVALUATION CARVE-OUT — none of these
+    // ever reach a recommender-visible structure. Fed ONLY under realism.latent_reactions; reduced
+    // into ExperimentResult::welfare (per-round + overall
+    // satisfaction/regret/satisfaction-per-minute + per-archetype exposure) after the round loop
+    // and emitted as gate-on-only CSVs/summary blocks. Sized to the round count and the catalog
+    // size so the buckets are deterministic. Constructed unconditionally (cheap); left un-fed and
+    // un-reduced when the gate is off (byte-identical, D17).
+    WelfareMetrics welfareMetrics(rounds, config_.realism.archetypes.size());
     // Estimate<->hidden alignment (TDD 18.5), one mean per round measured after the round
     // completes.
     std::vector<double> alignmentByRound(rounds, 0.0);
@@ -437,10 +444,16 @@ ExperimentResult ExperimentRunner::run() {
                         }
                     }
                     stepStorage = sim.stepV2(user, ds.hiddenStates[u], reel, creator, v2, latent);
-                    WelfareAcc &wacc = welfareByRound[round];
-                    wacc.impressions += 1;
-                    wacc.satisfactionSum += latent.immediateSatisfaction;
-                    wacc.regretSum += latent.regret;
+                    // Welfare-group feed (evaluation carve-out, D18): the hidden latent +
+                    // observable watch time + the reel's hidden archetype index. watchSeconds is
+                    // the satisfaction-per-minute denominator; archetypeIndex drives the exposure
+                    // breakdown. None of these reach any recommender-visible surface.
+                    WelfareImpression wi;
+                    wi.immediateSatisfaction = latent.immediateSatisfaction;
+                    wi.regret = latent.regret;
+                    wi.watchSeconds = stepStorage.outcome.watchSeconds;
+                    wi.archetypeIndex = ds.hiddenReelStates[reelId.value].archetypeIndex;
+                    welfareMetrics.add(round, wi);
                 } else {
                     stepStorage = sim.step(user, ds.hiddenStates[u], reel, creator);
                 }
@@ -462,6 +475,12 @@ ExperimentResult ExperimentRunner::run() {
                 s.liked = step.outcome.liked;
                 s.shared = step.outcome.shared;
                 s.followed = step.outcome.followed;
+                // Realism V2 engagement signals (Phase 15). Always false under the V1 step (gate
+                // off), so the derived rates stay 0 and never touch a V1 CSV — they surface only in
+                // the gate-on welfare CSV / summary blocks (D22).
+                s.commented = step.outcome.commented;
+                s.saved = step.outcome.saved;
+                s.profileVisited = step.outcome.profileVisited;
                 s.reward = step.event.reward;
                 // Evaluation-only hidden-state read (TDD 18.2): true affinity of the shown reel.
                 s.trueAffinity = dot(ds.hiddenStates[u].hiddenPreference, reel.embedding);
@@ -625,34 +644,23 @@ ExperimentResult ExperimentRunner::run() {
     result.finalEstimatedHiddenCosine =
         result.rounds.empty() ? 0.0 : result.rounds.back().meanEstimatedHiddenCosine;
 
-    // Hidden-user-welfare reduction (Phase 14, V2 TDD 4.3/6): per-round and overall means of the
-    // per-impression latent satisfaction/regret. Populated ONLY under realism.latent_reactions
-    // (evaluation carve-out, D18); a gate-off run leaves welfare.configured false and emits no
-    // `welfare` block (byte-identical to pre-Phase-14, D17). Deterministic (a pure reduction of
-    // sums the simulation already produced).
+    // Hidden-user-welfare reduction (Phase 15, V2 TDD §6, D22): the welfare-group module reduces
+    // the per-impression latent/observable/archetype stream into per-round + overall
+    // satisfaction/regret/satisfaction-per-minute and the per-archetype exposure breakdown.
+    // Populated ONLY under realism.latent_reactions (evaluation carve-out, D18); a gate-off run
+    // leaves welfare.configured false and emits no welfare block/CSVs (byte-identical to
+    // pre-Phase-14, D17). Deterministic (a pure reduction of sums the simulation already produced).
+    // Archetype indices resolve to catalog names in index order (hidden identity → evaluation-only
+    // label; the ranker never sees it).
     result.welfare.configured = latentReactions;
     if (latentReactions) {
-        WelfareReport &w = result.welfare;
-        w.byRound.reserve(rounds);
-        std::size_t totalImpr = 0;
-        double totalSat = 0.0;
-        double totalReg = 0.0;
-        for (size_t r = 0; r < rounds; ++r) {
-            const WelfareAcc &wa = welfareByRound[r];
-            const double denom = wa.impressions > 0 ? static_cast<double>(wa.impressions) : 1.0;
-            WelfareRoundPoint p;
-            p.round = r;
-            p.impressions = wa.impressions;
-            p.meanSatisfaction = wa.impressions > 0 ? wa.satisfactionSum / denom : 0.0;
-            p.meanRegret = wa.impressions > 0 ? wa.regretSum / denom : 0.0;
-            w.byRound.push_back(p);
-            totalImpr += wa.impressions;
-            totalSat += wa.satisfactionSum;
-            totalReg += wa.regretSum;
+        std::vector<std::string> archetypeNames;
+        archetypeNames.reserve(config_.realism.archetypes.size());
+        for (const ArchetypeSpec &a : config_.realism.archetypes) {
+            archetypeNames.push_back(a.name);
         }
-        w.impressions = totalImpr;
-        w.meanSatisfaction = totalImpr > 0 ? totalSat / static_cast<double>(totalImpr) : 0.0;
-        w.meanRegret = totalImpr > 0 ? totalReg / static_cast<double>(totalImpr) : 0.0;
+        result.welfare = welfareMetrics.reduce(archetypeNames);
+        result.welfare.configured = true;
     }
 
     result.retrievalSampleCount = totalRetrievalSamples;

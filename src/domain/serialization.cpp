@@ -113,6 +113,13 @@ void to_json(nlohmann::json &j, const User &u) {
         {"estimated_preference", u.estimatedPreference},
         {"long_term_preference", u.longTermPreference},
         {"session_preference", u.sessionPreference},
+        // Realism V2 recommender-visible modality estimates (V2 TDD 5, Phase 15). Maintained by
+        // OnlineUserStateUpdater from OBSERVABLE reward only; empty under gate-off. Serialized as
+        // full estimate vectors like the other preference estimates (recommender-visible, D18) and
+        // consciously allowlisted in the SAME commit (tests/unit/leak_audit_test.cpp).
+        {"estimated_visual_preference", u.estimatedVisualPreference},
+        {"estimated_music_preference", u.estimatedMusicPreference},
+        {"estimated_emotional_preference", u.estimatedEmotionalPreference},
         {"seen_reels", u.seenReels.size()},
         {"creator_affinity", u.creatorAffinity.size()},
         {"recent_interactions", u.recentInteractions.size()},

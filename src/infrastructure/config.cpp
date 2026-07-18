@@ -122,16 +122,44 @@ void to_json(json &j, const RankingConfig &c) {
              {"impression_penalty_weight", c.impressionPenaltyWeight},
              {"session_topic_weight", c.sessionTopicWeight},
              {"freshness_half_life_seconds", c.freshnessHalfLifeSeconds},
-             {"trending_half_life_seconds", c.trendingHalfLifeSeconds}};
+             {"trending_half_life_seconds", c.trendingHalfLifeSeconds},
+             {"visual_match_weight", c.visualMatchWeight},
+             {"music_match_weight", c.musicMatchWeight},
+             {"emotional_match_weight", c.emotionalMatchWeight},
+             {"clickbait_weight", c.clickbaitWeight},
+             {"emotional_intensity_weight", c.emotionalIntensityWeight},
+             {"usefulness_weight", c.usefulnessWeight},
+             {"production_quality_weight", c.productionQualityWeight},
+             {"information_density_weight", c.informationDensityWeight},
+             {"language_match_weight", c.languageMatchWeight},
+             {"save_popularity_weight", c.savePopularityWeight}};
 }
 
 void from_json(const json &j, RankingConfig &c) {
     ensureKnownKeys(j, "ranking",
-                    {"similarity_weight", "quality_weight", "freshness_weight", "popularity_weight",
-                     "trending_weight", "creator_affinity_weight", "exploration_weight",
-                     "repetition_penalty", "duration_match_weight", "impression_penalty_weight",
-                     "session_topic_weight", "freshness_half_life_seconds",
-                     "trending_half_life_seconds"});
+                    {"similarity_weight",
+                     "quality_weight",
+                     "freshness_weight",
+                     "popularity_weight",
+                     "trending_weight",
+                     "creator_affinity_weight",
+                     "exploration_weight",
+                     "repetition_penalty",
+                     "duration_match_weight",
+                     "impression_penalty_weight",
+                     "session_topic_weight",
+                     "freshness_half_life_seconds",
+                     "trending_half_life_seconds",
+                     "visual_match_weight",
+                     "music_match_weight",
+                     "emotional_match_weight",
+                     "clickbait_weight",
+                     "emotional_intensity_weight",
+                     "usefulness_weight",
+                     "production_quality_weight",
+                     "information_density_weight",
+                     "language_match_weight",
+                     "save_popularity_weight"});
     readKey(j, "similarity_weight", c.similarityWeight);
     readKey(j, "quality_weight", c.qualityWeight);
     readKey(j, "freshness_weight", c.freshnessWeight);
@@ -145,6 +173,16 @@ void from_json(const json &j, RankingConfig &c) {
     readKey(j, "session_topic_weight", c.sessionTopicWeight);
     readKey(j, "freshness_half_life_seconds", c.freshnessHalfLifeSeconds);
     readKey(j, "trending_half_life_seconds", c.trendingHalfLifeSeconds);
+    readKey(j, "visual_match_weight", c.visualMatchWeight);
+    readKey(j, "music_match_weight", c.musicMatchWeight);
+    readKey(j, "emotional_match_weight", c.emotionalMatchWeight);
+    readKey(j, "clickbait_weight", c.clickbaitWeight);
+    readKey(j, "emotional_intensity_weight", c.emotionalIntensityWeight);
+    readKey(j, "usefulness_weight", c.usefulnessWeight);
+    readKey(j, "production_quality_weight", c.productionQualityWeight);
+    readKey(j, "information_density_weight", c.informationDensityWeight);
+    readKey(j, "language_match_weight", c.languageMatchWeight);
+    readKey(j, "save_popularity_weight", c.savePopularityWeight);
 }
 
 void to_json(json &j, const LearningConfig &c) {
@@ -154,13 +192,14 @@ void to_json(json &j, const LearningConfig &c) {
              {"recent_window", c.recentWindow},
              {"session_lambda", c.sessionLambda},
              {"long_term_weight", c.longTermWeight},
-             {"session_weight", c.sessionWeight}};
+             {"session_weight", c.sessionWeight},
+             {"modality_rate", c.modalityRate}};
 }
 
 void from_json(const json &j, LearningConfig &c) {
     ensureKnownKeys(j, "learning",
                     {"enabled", "long_term_rate", "session_rate", "recent_window", "session_lambda",
-                     "long_term_weight", "session_weight"});
+                     "long_term_weight", "session_weight", "modality_rate"});
     readKey(j, "enabled", c.enabled);
     readKey(j, "long_term_rate", c.longTermRate);
     readKey(j, "session_rate", c.sessionRate);
@@ -168,6 +207,7 @@ void from_json(const json &j, LearningConfig &c) {
     readKey(j, "session_lambda", c.sessionLambda);
     readKey(j, "long_term_weight", c.longTermWeight);
     readKey(j, "session_weight", c.sessionWeight);
+    readKey(j, "modality_rate", c.modalityRate);
 }
 
 void to_json(json &j, const ExplorationConfig &c) {
@@ -311,6 +351,8 @@ const char *toString(RecommendationAlgorithm a) {
         return "hnsw_ranker_diversity";
     case RecommendationAlgorithm::HnswRankerExploration:
         return "hnsw_ranker_exploration";
+    case RecommendationAlgorithm::OracleSatisfaction:
+        return "oracle_satisfaction";
     }
     return "random";
 }
@@ -337,10 +379,13 @@ RecommendationAlgorithm algorithmFromString(const std::string &s) {
     if (s == "hnsw_ranker_exploration") {
         return RecommendationAlgorithm::HnswRankerExploration;
     }
+    if (s == "oracle_satisfaction") {
+        return RecommendationAlgorithm::OracleSatisfaction;
+    }
     throw std::invalid_argument(
         "unknown algorithm '" + s +
         "'; valid values: random, popularity, exact_vector, hnsw, hnsw_ranker, "
-        "hnsw_ranker_diversity, hnsw_ranker_exploration");
+        "hnsw_ranker_diversity, hnsw_ranker_exploration, oracle_satisfaction");
 }
 
 void to_json(json &j, const RecommendationAlgorithm &a) { j = toString(a); }

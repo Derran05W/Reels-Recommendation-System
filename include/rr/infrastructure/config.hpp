@@ -81,6 +81,23 @@ struct RankingConfig {
     // Simulator::step's accumulator maintenance.
     double freshnessHalfLifeSeconds = 604800.0; // 7 simulated days
     double trendingHalfLifeSeconds = 21600.0;   // 6 simulated hours
+
+    // --- Realism V2 ranking-feature weights (V2 TDD refs via plan Phase 15 task 3) ------------
+    // The V2 features are EXTRACTED only when realism.content_v2 is on (FeatureExtractor gate);
+    // every weight below defaults to 0.0 so a gate-on run with default weights ranks EXACTLY
+    // like V1 — experiment presets (engagement / satisfaction-proxy arms) opt in per weight,
+    // keeping arm comparisons single-variable. clickbait/emotional-intensity are the
+    // engagement-arm wedge features; the satisfaction-proxy arm weights clickbait NEGATIVELY.
+    double visualMatchWeight = 0.0;
+    double musicMatchWeight = 0.0;
+    double emotionalMatchWeight = 0.0;
+    double clickbaitWeight = 0.0;
+    double emotionalIntensityWeight = 0.0;
+    double usefulnessWeight = 0.0;
+    double productionQualityWeight = 0.0;
+    double informationDensityWeight = 0.0;
+    double languageMatchWeight = 0.0;
+    double savePopularityWeight = 0.0;
     bool operator==(const RankingConfig &) const = default;
 };
 
@@ -100,6 +117,11 @@ struct LearningConfig {
     // configurable by TDD 8.3.
     double longTermWeight = 0.65;
     double sessionWeight = 0.35;
+    // Realism V2 (Phase 15): EMA rate for the per-modality estimated preferences on User
+    // (V2 TDD 5), mirroring the V1 11.2 long-term rule applied to the reel's modality
+    // embeddings, driven by the same observable reward. Consumed only when realism.content_v2
+    // is on (the modality embeddings exist); gate-off performs no modality updates (D17).
+    double modalityRate = 0.02;
     bool operator==(const LearningConfig &) const = default;
 };
 
@@ -276,7 +298,11 @@ struct EvaluationConfig {
     bool operator==(const EvaluationConfig &) const = default;
 };
 
-// TDD 16.1-16.7.
+// TDD 16.1-16.7, plus the Phase 15 evaluation-only oracle arm (V2 TDD 4.4 core experiment):
+// OracleSatisfaction ranks the SEMANTIC candidate pool by expected hidden satisfaction. It is
+// implemented in evaluation/ (D18: it reads hidden state), so the recommendation-side factory
+// REJECTS it — only the ExperimentRunner may construct it, and it is barred from being a
+// trainable/serving policy.
 enum class RecommendationAlgorithm {
     Random,
     Popularity,
@@ -285,6 +311,7 @@ enum class RecommendationAlgorithm {
     HnswRanker,
     HnswRankerDiversity,
     HnswRankerExploration,
+    OracleSatisfaction,
 };
 
 struct ExperimentConfig {

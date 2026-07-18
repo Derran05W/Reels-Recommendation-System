@@ -125,15 +125,41 @@ const char *kAdaptationNote =
     "deterministic.";
 
 const char *kWelfareNote =
-    "Hidden user welfare (Phase 14, V2 TDD 4.3/6). Present only under realism.latent_reactions. "
+    "Hidden user welfare group (Phase 15, V2 TDD §6). Present only under realism.latent_reactions. "
     "Every impression computes a hidden LatentReaction whose immediate satisfaction ([-1,1]) and "
     "regret ([0,1]) are aggregated here through the D18 EVALUATION CARVE-OUT — the latent never "
     "reaches any recommender-visible structure (no latent field is ever serialized on an "
     "InteractionEvent or User; the leak audit enforces this). These are ground-truth welfare, "
     "DISTINCT from the engagement-proxy reward the online learner optimizes: engagement is "
     "evidence, not truth (V2 TDD 3.2), so mean_immediate_satisfaction can diverge from "
-    "reward_per_impression. This is the lean P14 slice; the full four-group welfare/session-health "
-    "framework and the engagement-vs-satisfaction experiment are Phase 15. Deterministic.";
+    "reward_per_impression. satisfaction_per_minute = sum(immediate satisfaction) / sum(simulated "
+    "watch-minutes) [watch_seconds/60] — satisfaction accrued per minute of watch time (can be "
+    "negative), NOT a per-impression mean; watch_minutes is the reproducible denominator. "
+    "archetype_exposure gives each hidden archetype's impression share (the direct 'does the "
+    "engagement arm over-serve ragebait/clickbait?' measurement) plus its mean "
+    "satisfaction/regret, "
+    "one row per catalog archetype in index order. harmful_fatigue and platform_trust are "
+    "NOT-YET-MODELED placeholders (constant 0) — harmful fatigue becomes real in P16 (session "
+    "dynamics), platform trust in P20 (retention); emitted now so the schema is stable early "
+    "(D22). "
+    "Per-round rows are in welfare_metrics.csv, per-archetype rows in "
+    "welfare_archetype_metrics.csv. "
+    "Deterministic.";
+
+const char *kMetricGroupsNote =
+    "V2 TDD §6 defines FOUR metric groups reported as SEPARATE blocks; NO single aggregate score "
+    "is "
+    "ever defined (D22) — a policy may improve one group while damaging another. (1) engagement: "
+    "the V1 metrics{} block (watch/completion/like/share/follow) + recommendation_metrics.csv, "
+    "extended here with the V2 comment/save/profile-visit rates. (2) hidden_user_welfare: the "
+    "welfare{} block + welfare_metrics.csv + welfare_archetype_metrics.csv (this run's welfare "
+    "group). (3) session_health: LIMITED before Phase 16 — only session length / "
+    "reward-per-session "
+    "exist so far; probabilistic classified exits, early-failure-exit rate, return delay and "
+    "retention arrive in P16/P20. (4) recommendation_quality: the diversity{} block + "
+    "metrics.mean_true_affinity + learning.final_estimated_hidden_cosine (V1 §18.2/18.4). The "
+    "engagement additions in this block are the ONLY new engagement numbers; the existing V1 "
+    "engagement files/columns are unchanged (D22).";
 
 // p50/p95/p99/mean/max/samples of a LatencyStats as a JSON object (wall-clock, D9).
 nlohmann::json latencyJson(const LatencyStats &l) {
@@ -273,16 +299,64 @@ void ResultsWriter::writeSummaryJson(const ExperimentResult &result) {
                            {"note", kAdaptationNote}};
     }
 
-    // Hidden-user-welfare block (Phase 14, V2 TDD 4.3/6): PRESENT only under
+    // Hidden-user-welfare block (Phase 15, V2 TDD §6, D22): PRESENT only under
     // realism.latent_reactions, so a gate-off run's summary.json carries no `welfare` key
-    // (byte-identical to a pre-Phase-14 run's non-timing content, D17). Overall means only — the
-    // per-round breakdown and the full four-group CSVs are Phase 15.
+    // (byte-identical to a pre-Phase-14 run's non-timing content, D17). The first three value keys
+    // are unchanged from Phase 14; Phase 15 appends satisfaction_per_minute, watch_minutes, the two
+    // NOT-YET-MODELED placeholders, and the per-archetype exposure array (overall, index order).
     if (result.welfare.configured) {
         const WelfareReport &w = result.welfare;
-        j["welfare"] = {{"impressions", w.impressions},
-                        {"mean_immediate_satisfaction", w.meanSatisfaction},
-                        {"mean_regret", w.meanRegret},
-                        {"note", kWelfareNote}};
+        nlohmann::json exposure = nlohmann::json::array();
+        for (const ArchetypeWelfare &a : w.byArchetype) {
+            exposure.push_back({{"archetype_index", a.archetypeIndex},
+                                {"archetype_name", a.name},
+                                {"impressions", a.impressions},
+                                {"exposure_share", a.exposureShare},
+                                {"mean_immediate_satisfaction", a.meanSatisfaction},
+                                {"mean_regret", a.meanRegret}});
+        }
+        j["welfare"] = {
+            {"impressions", w.impressions},
+            {"mean_immediate_satisfaction", w.meanSatisfaction},
+            {"mean_regret", w.meanRegret},
+            {"satisfaction_per_minute", w.satisfactionPerMinute},
+            {"watch_minutes", w.watchMinutes},
+            {"harmful_fatigue", w.harmfulFatigue},
+            {"platform_trust", w.platformTrust},
+            {"not_yet_modeled", nlohmann::json::array({"harmful_fatigue", "platform_trust"})},
+            {"archetype_exposure", exposure},
+            {"note", kWelfareNote}};
+
+        // Four-group index (V2 §6, D22): a single gate-on block documenting the four groups and
+        // carrying the engagement group's V2 additions (comment/save/profile-visit rates from the
+        // overall MetricsSummary). recommendation-quality/session-health point at the existing V1
+        // fields; session-health is flagged LIMITED pre-P16. NO aggregate score anywhere.
+        const MetricsSummary &ov = result.overall;
+        j["metric_groups"] = {
+            {"note", kMetricGroupsNote},
+            {"engagement",
+             {{"v1_fields", "metrics{} block + recommendation_metrics.csv "
+                            "(watch/completion/like/share/follow)"},
+              {"comment_rate", ov.commentRate},
+              {"save_rate", ov.saveRate},
+              {"profile_visit_rate", ov.profileVisitRate}}},
+            {"hidden_user_welfare",
+             {{"see", "welfare{} block + welfare_metrics.csv + welfare_archetype_metrics.csv"}}},
+            {
+                "session_health",
+                {{"status", "limited_pre_p16"},
+                 {"available", {"mean_session_length", "reward_per_session"}},
+                 {"pending",
+                  {"early_failure_exit_rate", "natural_exit_rate", "return_delay",
+                   "sessions_per_day", "retention"}},
+                 {"note",
+                  "Session-health group is LIMITED before Phase 16: only the V1 session-length "
+                  "/ reward-per-session numbers exist. Probabilistic classified exits, "
+                  "early-failure-exit rate, return delay and retention arrive in P16/P20."}},
+            },
+            {"recommendation_quality",
+             {{"see", "diversity{} block + metrics.mean_true_affinity + "
+                      "learning.final_estimated_hidden_cosine"}}}};
     }
 
     j["notes"] = {{"learning", result.learningEnabled ? kLearningEnabledNote : kLearningFrozenNote},
@@ -431,6 +505,46 @@ void ResultsWriter::writeNewReelExposureCsv(const ExperimentResult &result) {
     }
 }
 
+void ResultsWriter::writeWelfareMetricsCsv(const ExperimentResult &result) {
+    // Hidden-user-welfare group, per round (Phase 15, V2 TDD §6). Written ONLY under
+    // realism.latent_reactions. The welfare columns come from result.welfare.byRound; the three V2
+    // engagement rates come from the SAME round's engagement group (result.rounds[r].metrics) so
+    // the engagement additions live only here, never in a V1 CSV (D22).
+    // harmful_fatigue/platform_trust are NOT-YET-MODELED placeholders (constant 0; real in
+    // P16/P20). Deterministic (num() fixed precision, classic locale): byte-identical across
+    // same-seed runs.
+    std::ofstream csv(result.directory / "welfare_metrics.csv");
+    csv << "round,impressions,mean_immediate_satisfaction,mean_regret,satisfaction_per_minute,"
+           "watch_minutes,comment_rate,save_rate,profile_visit_rate,harmful_fatigue,platform_"
+           "trust\n";
+    for (std::size_t r = 0; r < result.welfare.byRound.size(); ++r) {
+        const WelfareRoundPoint &p = result.welfare.byRound[r];
+        // Engagement rates for the same round (0 if the round index is somehow absent).
+        const MetricsSummary eng =
+            r < result.rounds.size() ? result.rounds[r].metrics : MetricsSummary{};
+        csv << p.round << ',' << p.impressions << ',' << num(p.meanSatisfaction) << ','
+            << num(p.meanRegret) << ',' << num(p.satisfactionPerMinute) << ','
+            << num(p.watchMinutes) << ',' << num(eng.commentRate) << ',' << num(eng.saveRate) << ','
+            << num(eng.profileVisitRate) << ',' << num(p.harmfulFatigue) << ','
+            << num(p.platformTrust) << '\n';
+    }
+}
+
+void ResultsWriter::writeWelfareArchetypeMetricsCsv(const ExperimentResult &result) {
+    // Per-archetype exposure + welfare over the whole run (Phase 15, V2 TDD §6). Written ONLY under
+    // realism.latent_reactions. One row per catalog archetype in index order (stable schema across
+    // arms, even for zero-impression archetypes) — exposure_share is the direct measurement task
+    // 5's engagement-vs-satisfaction experiment reads. Deterministic.
+    std::ofstream csv(result.directory / "welfare_archetype_metrics.csv");
+    csv << "archetype_index,archetype_name,impressions,exposure_share,mean_immediate_satisfaction,"
+           "mean_regret\n";
+    for (const ArchetypeWelfare &a : result.welfare.byArchetype) {
+        csv << a.archetypeIndex << ',' << a.name << ',' << a.impressions << ','
+            << num(a.exposureShare) << ',' << num(a.meanSatisfaction) << ',' << num(a.meanRegret)
+            << '\n';
+    }
+}
+
 void ResultsWriter::writeAll(const ExperimentResult &result, const RunMetadata &meta) {
     writeConfigJson(result);
     writeSummaryJson(result);
@@ -447,6 +561,13 @@ void ResultsWriter::writeAll(const ExperimentResult &result, const RunMetadata &
     if (result.coldStart.configured) {
         writeNewUserCurveCsv(result);
         writeNewReelExposureCsv(result);
+    }
+    // Phase 15 welfare files (V2 TDD §6): written ONLY under realism.latent_reactions, so a
+    // gate-off run's output directory carries no welfare CSVs and every EXISTING file is
+    // byte-identical (D17).
+    if (result.welfare.configured) {
+        writeWelfareMetricsCsv(result);
+        writeWelfareArchetypeMetricsCsv(result);
     }
     writeMetadataJson(result.directory, meta);
 }

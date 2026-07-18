@@ -26,6 +26,9 @@ void MetricAccumulator::add(const ImpressionSample &s) {
     likeCount_ += s.liked ? 1u : 0u;
     shareCount_ += s.shared ? 1u : 0u;
     followCount_ += s.followed ? 1u : 0u;
+    commentCount_ += s.commented ? 1u : 0u;
+    saveCount_ += s.saved ? 1u : 0u;
+    profileVisitCount_ += s.profileVisited ? 1u : 0u;
     sessions_.insert(sessionKey(s.userId, s.sessionId));
 }
 
@@ -42,6 +45,9 @@ MetricsSummary MetricAccumulator::summary() const {
         s.likeRate = static_cast<double>(likeCount_) / n;
         s.shareRate = static_cast<double>(shareCount_) / n;
         s.followRate = static_cast<double>(followCount_) / n;
+        s.commentRate = static_cast<double>(commentCount_) / n;
+        s.saveRate = static_cast<double>(saveCount_) / n;
+        s.profileVisitRate = static_cast<double>(profileVisitCount_) / n;
         s.rewardPerImpression = rewardSum_ / n;
         s.meanTrueAffinity = trueAffinitySum_ / n;
     }

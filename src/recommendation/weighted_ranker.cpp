@@ -8,8 +8,9 @@
 
 namespace rr {
 
-WeightedRanker::WeightedRanker(const std::vector<Reel> &reels, const RankingConfig &config)
-    : config_(config), extractor_(reels, config) {}
+WeightedRanker::WeightedRanker(const std::vector<Reel> &reels, const RankingConfig &config,
+                               bool contentV2)
+    : config_(config), extractor_(reels, config, contentV2), contentV2_(contentV2) {}
 
 std::vector<Candidate> WeightedRanker::rank(const User &user,
                                             const std::vector<Candidate> &candidates,
@@ -44,12 +45,11 @@ std::vector<Candidate> WeightedRanker::rank(const User &user,
         const float impressionPenalty =
             static_cast<float>(-config_.impressionPenaltyWeight * f.impressionCount);
 
-        const double sum = static_cast<double>(similarity) + sessionTopic + quality + freshness +
-                           popularity + trending + creatorAffinity + exploration + durationMatch +
-                           repetitionPenalty + impressionPenalty;
+        double sum = static_cast<double>(similarity) + sessionTopic + quality + freshness +
+                     popularity + trending + creatorAffinity + exploration + durationMatch +
+                     repetitionPenalty + impressionPenalty;
 
         Candidate &c = ranked[i];
-        c.rankingScore = static_cast<float>(sum);
         c.featureContributions = {
             {"similarity", similarity},
             {"session_topic", sessionTopic},
@@ -63,6 +63,49 @@ std::vector<Candidate> WeightedRanker::rank(const User &user,
             {"repetition_penalty", repetitionPenalty},
             {"impression_penalty", impressionPenalty},
         };
+
+        // Realism V2 gated contributions (Phase 15, plan task 3): weight * feature for each of the
+        // ten V2 features, emitted ONLY under contentV2_. Every V2 term is a POSITIVE weighted term
+        // (weight * feature); the SIGN comes from the config weight, so a NEGATIVE preset weight
+        // (e.g. the satisfaction-proxy arm penalizing clickbait) flows through as a negative
+        // contribution. Added to BOTH the running score and the map so it keeps summing to
+        // rankingScore. Gate-off: none added, so the score AND the eleven-key map are
+        // byte-identical to the pre-Phase-15 ranker (D17).
+        if (contentV2_) {
+            const float visualMatch = static_cast<float>(config_.visualMatchWeight * f.visualMatch);
+            const float musicMatch = static_cast<float>(config_.musicMatchWeight * f.musicMatch);
+            const float emotionalMatch =
+                static_cast<float>(config_.emotionalMatchWeight * f.emotionalMatch);
+            const float clickbait = static_cast<float>(config_.clickbaitWeight * f.clickbait);
+            const float emotionalIntensity =
+                static_cast<float>(config_.emotionalIntensityWeight * f.emotionalIntensity);
+            const float usefulness = static_cast<float>(config_.usefulnessWeight * f.usefulness);
+            const float productionQuality =
+                static_cast<float>(config_.productionQualityWeight * f.productionQuality);
+            const float informationDensity =
+                static_cast<float>(config_.informationDensityWeight * f.informationDensity);
+            const float languageMatch =
+                static_cast<float>(config_.languageMatchWeight * f.languageMatch);
+            const float savePopularity =
+                static_cast<float>(config_.savePopularityWeight * f.savePopularity);
+
+            sum += static_cast<double>(visualMatch) + musicMatch + emotionalMatch + clickbait +
+                   emotionalIntensity + usefulness + productionQuality + informationDensity +
+                   languageMatch + savePopularity;
+
+            c.featureContributions["visual_match"] = visualMatch;
+            c.featureContributions["music_match"] = musicMatch;
+            c.featureContributions["emotional_match"] = emotionalMatch;
+            c.featureContributions["clickbait"] = clickbait;
+            c.featureContributions["emotional_intensity"] = emotionalIntensity;
+            c.featureContributions["usefulness"] = usefulness;
+            c.featureContributions["production_quality"] = productionQuality;
+            c.featureContributions["information_density"] = informationDensity;
+            c.featureContributions["language_match"] = languageMatch;
+            c.featureContributions["save_popularity"] = savePopularity;
+        }
+
+        c.rankingScore = static_cast<float>(sum);
     }
 
     // Sort by rankingScore DESCENDING, ties by ascending ReelId. ReelIds are unique in a

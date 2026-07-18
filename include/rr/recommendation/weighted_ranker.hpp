@@ -22,12 +22,27 @@ namespace rr {
 // candidates sorted by rankingScore DESCENDING, ties broken by ascending ReelId (a total order, so
 // the output is fully deterministic - same doctrine as the Orchestrator).
 //
-// Every returned candidate carries its rankingScore AND a featureContributions map with all ELEVEN
-// FROZEN snake_case keys always present, penalties stored as NEGATIVE values. The map's values
-// sum to rankingScore to float tolerance (property-tested).
+// Every returned candidate carries its rankingScore AND a featureContributions map. The ELEVEN
+// FROZEN V1 snake_case keys are ALWAYS present (penalties stored as NEGATIVE values): similarity,
+// session_topic, quality, freshness, popularity, trending, creator_affinity, exploration,
+// duration_match, repetition_penalty, impression_penalty.
+//
+// Under `contentV2` (Phase 15) the map ADDITIONALLY carries the TEN gated V2 keys — visual_match,
+// music_match, emotional_match, clickbait, emotional_intensity, usefulness, production_quality,
+// information_density, language_match, save_popularity — each stored as weight * feature (the sign
+// comes from the config weight, so a NEGATIVE preset weight, e.g. the satisfaction-proxy arm
+// penalizing clickbait, yields a negative contribution). With contentV2 false (the default) NONE of
+// the V2 keys is emitted and the map is byte-identical to the pre-Phase-15 ranker (D17).
+//
+// The map's values sum to rankingScore to float tolerance (property-tested), whichever key set is
+// present.
 class WeightedRanker final : public Ranker {
   public:
-    WeightedRanker(const std::vector<Reel> &reels, const RankingConfig &config);
+    // `contentV2` (Phase 15): forwarded to the FeatureExtractor; when true, package B1's V2
+    // feature contributions are emitted (gated keys), when false (default) output is
+    // byte-identical to the pre-Phase-15 ranker (D17).
+    WeightedRanker(const std::vector<Reel> &reels, const RankingConfig &config,
+                   bool contentV2 = false);
 
     std::vector<Candidate> rank(const User &user, const std::vector<Candidate> &candidates,
                                 Timestamp now) const override;
@@ -35,6 +50,9 @@ class WeightedRanker final : public Ranker {
   private:
     RankingConfig config_;
     FeatureExtractor extractor_;
+    // Phase 15: gates the ten V2 contribution keys in rank(); false keeps the map byte-identical to
+    // the pre-Phase-15 ranker (D17). Also forwarded to the FeatureExtractor at construction.
+    bool contentV2_ = false;
 };
 
 } // namespace rr

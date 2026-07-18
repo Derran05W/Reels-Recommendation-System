@@ -8,6 +8,7 @@
 
 #include "rr/evaluation/metrics_collector.hpp"
 #include "rr/evaluation/run_metadata.hpp"
+#include "rr/evaluation/welfare_metrics.hpp"
 #include "rr/infrastructure/config.hpp"
 
 namespace rr {
@@ -196,26 +197,10 @@ struct AdaptationReport {
     double adaptationWindowRegret = 0.0;
 };
 
-// Hidden-user-welfare accumulation (Phase 14, V2 TDD 4.3/6). Populated ONLY under
-// realism.latent_reactions (the evaluation carve-out, D18): the per-impression LatentReaction —
-// which never reaches any recommender-visible structure — is aggregated here into per-round and
-// overall mean immediate-satisfaction and mean regret. When `configured` is false the whole block
-// is absent from summary.json (byte-identical to a pre-Phase-14 run, D17). This is the lean P14
-// slice of V2 §6's "hidden user welfare" group; the full four-group CSV framework is Phase 15.
-struct WelfareRoundPoint {
-    std::size_t round = 0;
-    std::size_t impressions = 0;
-    double meanSatisfaction = 0.0; // mean LatentReaction.immediateSatisfaction over the round
-    double meanRegret = 0.0;       // mean LatentReaction.regret over the round
-};
-
-struct WelfareReport {
-    bool configured = false;       // true iff realism.latentReactions
-    std::size_t impressions = 0;   // total impressions with a latent reaction
-    double meanSatisfaction = 0.0; // over all impressions (0 if none)
-    double meanRegret = 0.0;       // over all impressions (0 if none)
-    std::vector<WelfareRoundPoint> byRound;
-};
+// Hidden-user-welfare metrics (WelfareReport / WelfareRoundPoint / ArchetypeWelfare) are defined in
+// rr/evaluation/welfare_metrics.hpp (the V2 §6 welfare-group module, Phase 15 — extending the lean
+// Phase 14 slice). They remain in scope here via that include, so consumers of this header are
+// unaffected by the move.
 
 // Everything one experiment produced, in memory. The ResultsWriter serializes it to disk; the
 // simulate CLI prints headline lines from it. `directory` is the created <experiment-id> dir.
@@ -292,9 +277,12 @@ struct ExperimentResult {
     // a pre-Phase-10 run).
     AdaptationReport adaptation;
 
-    // Hidden-user-welfare metrics (Phase 14, V2 TDD 4.3/6). `configured` is false for a gate-off
-    // run (realism.latent_reactions off), in which case no `welfare` key is written (byte-identical
-    // to a pre-Phase-14 run, D17).
+    // Hidden-user-welfare metrics group (Phase 15, V2 TDD §6, D22). `configured` is false for a
+    // gate-off run (realism.latent_reactions off), in which case no welfare block/CSVs are written
+    // (byte-identical to a pre-Phase-14 run, D17). Under the gate it carries the per-round +
+    // overall satisfaction/regret/satisfaction-per-minute plus the per-archetype exposure
+    // breakdown; the engagement group's V2 additions (comment/save/profile rates) live in
+    // `overall`/`rounds`.
     WelfareReport welfare;
 };
 

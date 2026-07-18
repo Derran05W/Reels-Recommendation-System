@@ -42,7 +42,7 @@ apps/benchmark_recommender), found by recursive glob and concatenated:
   p99_vs_corpus.png         end-to-end and retrieval p99 vs corpus size at the max thread count
                             present, from load_metrics.csv.
 
-Produces up to four simulation PNGs in --out, skipping (with a one-line stderr note) any
+Produces up to five simulation PNGs in --out, skipping (with a one-line stderr note) any
 plot whose required inputs are missing across every run:
 
   reward_curve.png       mean_reward_per_impression vs. interactions_per_user,
@@ -72,6 +72,14 @@ plot whose required inputs are missing across every run:
                          adaptation.pre_drift_reward, else computed as the
                          mean reward over the rows preceding that run's drift
                          interaction).
+  engagement_vs_welfare.png  Phase 15 headline figure (V2 TDD §4.4 core
+                         experiment): scatter of engagement
+                         (summary.json metrics.reward_per_impression) vs.
+                         mean hidden satisfaction (summary.json
+                         welfare.mean_immediate_satisfaction, present only
+                         under realism.latent_reactions), one labeled point
+                         per run. Skipped for any run missing either value
+                         (e.g. a V1/gate-off config with no `welfare` block).
 
 Exit status: 0 if at least one plot was written, 1 if none were.
 """
@@ -423,6 +431,53 @@ def plot_drift_recovery(runs: list[RunData], outdir: Path, cli_drift_at: Optiona
         "interactions per user", "mean reward per impression",
         "Preference-Drift Recovery",
     )
+    return True
+
+
+def plot_engagement_vs_welfare(runs: list[RunData], outdir: Path,
+                               filename: str = "engagement_vs_welfare.png") -> bool:
+    """Phase 15 headline figure (V2 TDD §4.4 core experiment / plan Phase 15 task 5).
+
+    Scatter of engagement vs. hidden welfare, one labeled point per run: x = engagement, read as
+    summary.json's metrics.reward_per_impression (the same "engagement proxy" headline number used
+    for every prior phase, e.g. Phase 7/10's README figures — reward_per_impression is a monotone
+    function of watch ratio/seconds/like/share/follow, so it is the natural single-number engagement
+    axis; mean_watch_seconds is the documented alternative if a future call site wants pure watch
+    time instead). y = mean hidden satisfaction, read as summary.json's
+    welfare.mean_immediate_satisfaction (Phase 14/15, D18 evaluation carve-out) -- present only for
+    runs with realism.latent_reactions on, so a V1/gate-off run in the same call is skipped, not
+    plotted at (x, 0). This is the plumbing that makes the phase's thesis visible: engagement and
+    hidden satisfaction are DISTINCT axes (V2 TDD §3.2), so an arm can lead on one while trailing on
+    the other.
+    """
+    usable = []
+    for run in runs:
+        if run.summary is None:
+            continue
+        engagement = run.summary.get("metrics", {}).get("reward_per_impression")
+        welfare = run.summary.get("welfare")
+        if engagement is None or not isinstance(welfare, dict):
+            continue
+        satisfaction = welfare.get("mean_immediate_satisfaction")
+        if satisfaction is None:
+            continue
+        usable.append((run, engagement, satisfaction))
+
+    if not usable:
+        warn(f"skipping {filename}: no run has both metrics.reward_per_impression and "
+             f"welfare.mean_immediate_satisfaction (welfare requires realism.latent_reactions)")
+        return False
+
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    for run, engagement, satisfaction in usable:
+        ax.scatter(engagement, satisfaction, s=110, zorder=3, color=run.color, label=run.label)
+        ax.annotate(run.label, (engagement, satisfaction), textcoords="offset points",
+                    xytext=(8, 4), fontsize=8)
+    ax.margins(0.18)  # headroom so corner point annotations are not clipped
+    finish_figure(fig, ax, outdir / filename,
+                  "engagement  (reward per impression)",
+                  "mean hidden satisfaction",
+                  "Engagement vs. Hidden Satisfaction")
     return True
 
 
@@ -1060,6 +1115,7 @@ def main(argv=None) -> int:
     written += plot_alignment_curve(runs, outdir)
     written += plot_cumulative_regret(runs, outdir)
     written += plot_drift_recovery(runs, outdir, args.drift_at)
+    written += plot_engagement_vs_welfare(runs, outdir)
 
     # Phase 11 benchmark plots (retrieval_metrics.csv / load_metrics.csv). Same dirs; a dir may hold
     # simulation CSVs, benchmark CSVs, or (a parent dir) several benchmark subtrees. Each warn-skips.

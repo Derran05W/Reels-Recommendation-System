@@ -1,0 +1,5 @@
+arm,algorithm,impressions,watch time (mean watchSeconds/impression),completion rate,like rate,share rate,follow rate,comment rate,save rate,profile-visit rate,reward/impression (engagement proxy),MEAN HIDDEN SATISFACTION,hidden regret (LatentReaction.regret),satisfaction per minute,mean true affinity,estimated<->hidden cosine
+semantic,hnsw,2000000,69.0561,0.781761,0.252559,0.093738,0.0133135,0.194225,0.287962,0.247714,0.504385,0.355321,0.132837,0.308724,0.0973042,0.117871
+engagement,hnsw_ranker,2000000,64.0971,0.867208,0.297023,0.102759,0.0151495,0.25924,0.277454,0.241225,0.542119,0.328336,0.166913,0.307348,0.0895332,0.113466
+proxy,hnsw_ranker,2000000,56.534,0.849649,0.24817,0.113429,0.0134675,0.117222,0.445476,0.288152,0.534769,0.653003,0.0173712,0.693037,0.0884022,0.11959
+oracle,oracle_satisfaction,2000000,78.5974,0.888162,0.321291,0.124568,0.0272115,0.137879,0.42387,0.317167,0.586053,0.806101,0.00398878,0.615365,0.13698,0.1447

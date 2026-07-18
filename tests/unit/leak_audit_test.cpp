@@ -69,6 +69,13 @@ const std::set<std::string> kUserAllowlist = {
     "estimated_preference",
     "long_term_preference",
     "session_preference",
+    // Realism V2 recommender-visible modality estimates (V2 TDD 5, Phase 15) — consciously
+    // allowlisted as observables: per-modality EMA estimates the OnlineUserStateUpdater maintains
+    // from OBSERVABLE reward only. Estimates, never hidden truth (D11/D18); they feed the ranking
+    // modality-match features. None is a latent value.
+    "estimated_visual_preference",
+    "estimated_music_preference",
+    "estimated_emotional_preference",
     "seen_reels",
     "creator_affinity",
     "recent_interactions",
@@ -142,6 +149,11 @@ User fullyPopulatedUser() {
     u.estimatedPreference = {0.1F, 0.2F, 0.3F};
     u.longTermPreference = {0.4F, 0.5F, 0.6F};
     u.sessionPreference = {0.7F, 0.8F, 0.9F};
+    // Realism V2 modality estimates (Phase 15) at concrete non-empty values so the *_preference
+    // keys are exercised and a failing schema dump is meaningful.
+    u.estimatedVisualPreference = {0.11F, 0.22F, 0.33F};
+    u.estimatedMusicPreference = {0.44F, 0.55F, 0.66F};
+    u.estimatedEmotionalPreference = {0.77F, 0.88F, 0.99F};
     u.seenReels = {ReelId{1}, ReelId{2}, ReelId{3}};
     u.creatorAffinity = {{CreatorId{1}, 0.5F}, {CreatorId{2}, 0.25F}};
     u.recentInteractions = {fullyPopulatedEvent(), fullyPopulatedEvent()};

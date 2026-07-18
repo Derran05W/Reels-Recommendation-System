@@ -57,6 +57,12 @@ std::unique_ptr<Recommender> makeRecommender(RecommendationAlgorithm algorithm,
         return std::make_unique<HNSWExplorationRecommender>(deps, std::move(rng));
     case RecommendationAlgorithm::HnswRankerDiversity:
         return std::make_unique<FullRecommender>(deps, std::move(rng));
+    case RecommendationAlgorithm::OracleSatisfaction:
+        // D18: the oracle arm reads hidden state and lives in evaluation/ — only the
+        // ExperimentRunner may construct it. Rejecting it HERE keeps recommendation-side code
+        // structurally unable to serve it as a policy.
+        throw std::invalid_argument("makeRecommender: oracle_satisfaction is evaluation-only "
+                                    "(constructed by the ExperimentRunner, never the factory)");
     }
     throw std::invalid_argument("makeRecommender: unknown RecommendationAlgorithm value");
 }

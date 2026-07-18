@@ -18,6 +18,15 @@ struct ImpressionSample {
     bool liked = false;
     bool shared = false;
     bool followed = false;
+    // Realism V2 engagement signals (V2 TDD §4.3/§6 engagement group, Phase 15). Sampled by
+    // BehaviourModelV2 only under realism.latent_reactions; the harness feeds them from the
+    // BehaviourOutcome at the existing add() site. Gate-off they are always false (the V1 outcome
+    // never sets them), so the derived rates are 0 and are NOT written to any V1 CSV — the V2
+    // engagement additions surface only in welfare_metrics.csv and the gate-on summary blocks (D22:
+    // existing V1 files/columns stay unchanged).
+    bool commented = false;
+    bool saved = false;
+    bool profileVisited = false;
     float reward = 0.0f;
     // Evaluation-only hidden-state read (TDD 18.2): dot(hidden.hiddenPreference, reel.embedding).
     float trueAffinity = 0.0f;
@@ -39,6 +48,12 @@ struct MetricsSummary {
     double likeRate = 0.0;
     double shareRate = 0.0;
     double followRate = 0.0;
+    // Realism V2 engagement rates (V2 TDD §6 engagement group, Phase 15). 0 gate-off. Surfaced in
+    // welfare_metrics.csv (per round) and the summary `metric_groups.engagement` block (gate-on);
+    // never appended to a V1 CSV/column (D22).
+    double commentRate = 0.0;
+    double saveRate = 0.0;
+    double profileVisitRate = 0.0;
     double meanSessionLength = 0.0;   // impressions / distinct sessions
     double rewardPerImpression = 0.0; // reward sum / impressions
     double rewardPerSession = 0.0;    // reward sum / distinct sessions
@@ -65,6 +80,9 @@ class MetricAccumulator {
     size_t likeCount_ = 0;
     size_t shareCount_ = 0;
     size_t followCount_ = 0;
+    size_t commentCount_ = 0;
+    size_t saveCount_ = 0;
+    size_t profileVisitCount_ = 0;
     // (userId << 32) | sessionId — SessionId is only unique within a user.
     std::unordered_set<uint64_t> sessions_;
 };

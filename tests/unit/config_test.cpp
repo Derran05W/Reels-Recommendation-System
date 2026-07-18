@@ -374,6 +374,33 @@ TEST(ConfigTest, LatentReactionsGateRequiresContentV2) {
     EXPECT_THROW(bad.get<ExperimentConfig>(), std::invalid_argument);
 }
 
+// --- Realism V2 Phase 15: ranking V2 weights, modality rate, oracle algorithm ----------------
+
+TEST(ConfigTest, RankingV2WeightsDefaultZeroAndParse) {
+    ExperimentConfig def;
+    // All V2 feature weights default 0.0 so gate-on-with-defaults ranks exactly like V1 (the
+    // single-variable experiment-arm contract, Phase 15).
+    EXPECT_DOUBLE_EQ(def.ranking.visualMatchWeight, 0.0);
+    EXPECT_DOUBLE_EQ(def.ranking.clickbaitWeight, 0.0);
+    EXPECT_DOUBLE_EQ(def.ranking.savePopularityWeight, 0.0);
+    EXPECT_DOUBLE_EQ(def.learning.modalityRate, 0.02);
+
+    json j = {{"ranking", {{"clickbait_weight", 0.2}, {"music_match_weight", 0.1}}},
+              {"learning", {{"modality_rate", 0.05}}}};
+    auto c = j.get<ExperimentConfig>();
+    EXPECT_DOUBLE_EQ(c.ranking.clickbaitWeight, 0.2);
+    EXPECT_DOUBLE_EQ(c.ranking.musicMatchWeight, 0.1);
+    EXPECT_DOUBLE_EQ(c.learning.modalityRate, 0.05);
+    json out = c;
+    EXPECT_EQ(out.get<ExperimentConfig>(), c);
+}
+
+TEST(ConfigTest, OracleSatisfactionAlgorithmRoundTripsButFactoryRejects) {
+    EXPECT_EQ(algorithmFromString("oracle_satisfaction"),
+              RecommendationAlgorithm::OracleSatisfaction);
+    EXPECT_STREQ(toString(RecommendationAlgorithm::OracleSatisfaction), "oracle_satisfaction");
+}
+
 TEST(ConfigTest, BehaviourV2BlockParsesRoundTripsAndRejectsUnknownKeys) {
     ExperimentConfig def;
     EXPECT_DOUBLE_EQ(def.behaviourV2.topicWeight, 1.5);

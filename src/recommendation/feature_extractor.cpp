@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <map>
 #include <vector>
 
 #include "rr/core/embedding.hpp"
@@ -15,6 +17,20 @@ namespace rr {
 namespace {
 
 float clamp01(double v) { return static_cast<float>(std::clamp(v, 0.0, 1.0)); }
+
+// V2 modality-match normalization (Phase 15): (cos(estimate, reel modality embedding) + 1) / 2 in
+// [0,1], the SAME affine map as `similarity`/`session_topic`. Both vectors are unit-length by
+// construction (the estimate is maintained unit-length by OnlineUserStateUpdater; the reel modality
+// embeddings are L2-normalized at generation), so cosine == dot. Returns the neutral 0.5 when the
+// estimate is empty (the updater has not cold-started this modality yet) or — defensively — when
+// the reel carries no such modality embedding or the dimensions disagree, so rr::dot never throws
+// on the hot path (this extractor's "a bad lookup can never throw" doctrine, D10).
+float modalityMatch(const Embedding &est, const Embedding &modality) {
+    if (est.empty() || modality.empty() || est.size() != modality.size()) {
+        return 0.5f;
+    }
+    return clamp01((static_cast<double>(dot(est, modality)) + 1.0) / 2.0);
+}
 
 // Whether a candidate's representative source is Exploration (drives the exploration bonus).
 bool isExploration(CandidateSource source) { return source == CandidateSource::Exploration; }
@@ -33,8 +49,9 @@ bool isDurationPositive(InteractionType type) {
 
 } // namespace
 
-FeatureExtractor::FeatureExtractor(const std::vector<Reel> &reels, const RankingConfig &config)
-    : reels_(reels), config_(config) {}
+FeatureExtractor::FeatureExtractor(const std::vector<Reel> &reels, const RankingConfig &config,
+                                   bool contentV2)
+    : reels_(reels), config_(config), contentV2_(contentV2) {}
 
 std::vector<FeatureVector> FeatureExtractor::extract(const User &user,
                                                      const std::vector<Candidate> &pool,
@@ -60,6 +77,32 @@ std::vector<FeatureVector> FeatureExtractor::extract(const User &user,
     const bool hasPreferred = durationCount > 0;
     const double preferredDuration =
         hasPreferred ? durationSum / static_cast<double>(durationCount) : 0.0;
+
+    // ---- Reference language for the V2 language_match feature (Phase 15), computed ONCE over the
+    // recent window: the MAJORITY language among the user's recently-interacted reels, ties broken
+    // to the LOWER language id (deterministic). The User has no serving-visible language field, so
+    // the reference is INFERRED from OBSERVABLES ONLY (the languages of recently-interacted reels),
+    // never from any hidden trait (D18). Empty/absent history => no reference => language_match is
+    // the neutral 1.0 for every candidate (documented). Only computed under contentV2_. O(window).
+    bool hasRefLanguage = false;
+    uint32_t refLanguage = 0;
+    if (contentV2_) {
+        std::map<uint32_t, int> counts; // ordered by language id for the lowest-id tie-break
+        for (const InteractionEvent &e : user.recentInteractions) {
+            if (inRange(e.reelId, reels_)) {
+                counts[reels_[e.reelId.value].language.value] += 1;
+            }
+        }
+        int best = 0;
+        for (const auto &[lang, count] :
+             counts) { // ascending id => first max wins ties (lowest id)
+            if (count > best) {
+                best = count;
+                refLanguage = lang;
+                hasRefLanguage = true;
+            }
+        }
+    }
 
     // ---- Pool-local popularity prior (banned from touching the whole catalog): the mean
     // engagement rate over THIS pool's reels, 0 if the pool has no impressions. Feeds
@@ -196,6 +239,40 @@ std::vector<FeatureVector> FeatureExtractor::extract(const User &user,
         // popularity raw signal: Bayesian-smoothed engagement rate with the POOL-LOCAL prior (the
         // global engagementPriorMean is banned on the hot path). Normalized in the second pass.
         rawPopularity[i] = smoothedPopularity(reel, poolPriorMean);
+
+        // ---- Realism V2 features (Phase 15, plan task 3): extracted only under contentV2_; gate-
+        // off leaves every field at its zero default so they are never emitted and cannot perturb a
+        // score (D17 byte-identity). VISIBLE-only inputs: the user's estimated modality preferences
+        // and the reel's V2 attributes. Each normalization is documented at its computation.
+        if (contentV2_) {
+            // Modality matches: (cos(estimate, reel modality embedding) + 1) / 2, neutral 0.5 for
+            // an as-yet-unlearned (empty) estimate. Documented at modalityMatch's definition.
+            f.visualMatch =
+                modalityMatch(user.estimatedVisualPreference, reel.visualStyleEmbedding);
+            f.musicMatch = modalityMatch(user.estimatedMusicPreference, reel.musicEmbedding);
+            f.emotionalMatch =
+                modalityMatch(user.estimatedEmotionalPreference, reel.emotionalToneEmbedding);
+
+            // Content-value scalars: ALREADY clamped to [0,1] at generation (reel_augmenter_v2), so
+            // used as-is (the clamp is a defensive no-op, matching the V1 `quality` passthrough).
+            f.clickbait = clamp01(static_cast<double>(reel.clickbaitStrength));
+            f.emotionalIntensity = clamp01(static_cast<double>(reel.emotionalIntensity));
+            f.usefulness = clamp01(static_cast<double>(reel.usefulness));
+            f.productionQuality = clamp01(static_cast<double>(reel.productionQuality));
+            f.informationDensity = clamp01(static_cast<double>(reel.informationDensity));
+
+            // language_match: 1.0 iff the reel's language equals the user's recent-window MAJORITY
+            // language (ties -> lower id, computed once above); the neutral 1.0 when there is no
+            // usable history. Binary indicator in {0,1}.
+            f.languageMatch = (!hasRefLanguage || reel.language.value == refLanguage) ? 1.0f : 0.0f;
+
+            // save_popularity: DEFERRED zero placeholder (recorded Phase 15 deviation). A save/
+            // comment-derived pool-local popularity refinement needs additive save/comment counters
+            // on Reel, which Phase 14 did NOT add (only per-event saved/commented flags exist, and
+            // those are unreachable from this pool-only extractor). savePopularityWeight defaults 0
+            // so the feature is inert; it stays 0.0 until a later phase adds the Reel counters.
+            f.savePopularity = 0.0f;
+        }
     }
 
     // Second pass -- popularity: pool MIN-MAX normalization of the smoothed engagement rate (TDD

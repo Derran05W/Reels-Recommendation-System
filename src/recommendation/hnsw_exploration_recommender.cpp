@@ -21,7 +21,7 @@ HNSWExplorationRecommender::HNSWExplorationRecommender(const RecommenderDeps &de
       explorationSource_(reels_, deps.config.exploration.epsilon,
                          deps.config.recommendation.explorationCandidates,
                          deps.config.exploration.freshWindowSeconds, &rng_),
-      ranker_(reels_, deps.config.ranking),
+      ranker_(reels_, deps.config.ranking, deps.config.realism.contentV2),
       orchestrator_(
           {&hnswSource_, &popularSource_, &trendingSource_, &creatorSource_, &explorationSource_},
           reels_, &ranker_, &explorationSource_, deps.config.exploration.guaranteedSlots) {

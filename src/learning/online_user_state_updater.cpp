@@ -33,11 +33,46 @@ bool tryNormalize(Embedding &v) {
     return true;
 }
 
+// Realism V2 gated per-modality estimate update (Phase 15, V2 TDD 5), mirroring the TDD 11.2
+// long-term rule applied to ONE modality embedding, driven by the SAME observable reward `r`:
+//   est <- normalize((1 - eta) * est + eta * r * modality).
+// No-op when the reel carries no such modality embedding (`modality.empty()` — the gate-off default
+// on the reel, or a defensive guard). COLD START: an EMPTY estimate is seeded to the reel's
+// modality DIRECTION (unit-normalized — the first observation, mirroring 11.1's cold-start of the
+// long-term vector to a prior; there is no modality prior to average, so the first observation IS
+// the seed). A degenerate EMA target (near-cancellation, only reachable with an adversarial eta)
+// keeps the previous estimate, matching the V1 rules' fallback doctrine. A dimension mismatch (a
+// pipeline bug — all embeddings share simulation.dimensions once seeded) is skipped rather than
+// read out of range.
+void updateModalityEstimate(Embedding &est, const Embedding &modality, double eta, double r) {
+    if (modality.empty()) {
+        return;
+    }
+    if (est.empty()) {
+        est = modality;    // seed to the first observed modality direction...
+        tryNormalize(est); // ...as a unit vector (a valid modality embedding is already unit-norm)
+        return;
+    }
+    if (est.size() != modality.size()) {
+        return;
+    }
+    const std::size_t dim = est.size();
+    Embedding target(dim, 0.0f);
+    for (std::size_t i = 0; i < dim; ++i) {
+        const double e = static_cast<double>(est[i]);
+        const double v = static_cast<double>(modality[i]);
+        target[i] = static_cast<float>((1.0 - eta) * e + eta * r * v);
+    }
+    if (tryNormalize(target)) {
+        est = std::move(target);
+    }
+}
+
 } // namespace
 
 OnlineUserStateUpdater::OnlineUserStateUpdater(const std::vector<Reel> &reels,
-                                               const LearningConfig &config)
-    : reels_(reels), config_(config) {}
+                                               const LearningConfig &config, bool contentV2)
+    : reels_(reels), config_(config), contentV2_(contentV2) {}
 
 void OnlineUserStateUpdater::apply(User &user, const Reel &reel,
                                    const InteractionEvent &interaction) const {
@@ -133,6 +168,22 @@ void OnlineUserStateUpdater::apply(User &user, const Reel &reel,
         if (tryNormalize(est)) {
             user.estimatedPreference = std::move(est);
         }
+    }
+
+    // 4. Realism V2 gated per-modality estimates (Phase 15, V2 TDD 5): mirror the 11.2 rule on the
+    //    reel's THREE modality embeddings at modalityRate, driven by the SAME observable reward.
+    //    Only when contentV2_ (realism.content_v2) — gate-off leaves the estimate vectors untouched
+    //    (empty), so this whole block is a no-op and V1 behaviour is byte-identical (D17). Each
+    //    modality is guarded by its own reel embedding being present (they are populated together
+    //    by augmentReelsV2, absent under gate-off). estimated* live ONLY on User
+    //    (recommender-visible, D18); the semantic candidate query is untouched (D23).
+    if (contentV2_) {
+        const double etaM = config_.modalityRate;
+        const double r = static_cast<double>(interaction.reward);
+        updateModalityEstimate(user.estimatedVisualPreference, reel.visualStyleEmbedding, etaM, r);
+        updateModalityEstimate(user.estimatedMusicPreference, reel.musicEmbedding, etaM, r);
+        updateModalityEstimate(user.estimatedEmotionalPreference, reel.emotionalToneEmbedding, etaM,
+                               r);
     }
 }
 

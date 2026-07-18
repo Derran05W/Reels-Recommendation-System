@@ -15,7 +15,7 @@ HNSWRankerRecommender::HNSWRankerRecommender(const RecommenderDeps &deps, Rng rn
       trendingSource_(reels_, deps.config.recommendation.trendingCandidates,
                       deps.config.ranking.trendingHalfLifeSeconds),
       creatorSource_(reels_, deps.config.recommendation.creatorAffinityCandidates),
-      ranker_(reels_, deps.config.ranking),
+      ranker_(reels_, deps.config.ranking, deps.config.realism.contentV2),
       orchestrator_({&hnswSource_, &popularSource_, &trendingSource_, &creatorSource_}, reels_,
                     &ranker_) {
     // Build the graph once over all active reels; embeddings are immutable (D2). Mirrors

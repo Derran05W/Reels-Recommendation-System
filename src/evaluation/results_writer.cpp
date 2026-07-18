@@ -124,6 +124,17 @@ const char *kAdaptationNote =
     "drifted_alignment, control_alignment); an empty cohort prints 'nan'. All values "
     "deterministic.";
 
+const char *kWelfareNote =
+    "Hidden user welfare (Phase 14, V2 TDD 4.3/6). Present only under realism.latent_reactions. "
+    "Every impression computes a hidden LatentReaction whose immediate satisfaction ([-1,1]) and "
+    "regret ([0,1]) are aggregated here through the D18 EVALUATION CARVE-OUT — the latent never "
+    "reaches any recommender-visible structure (no latent field is ever serialized on an "
+    "InteractionEvent or User; the leak audit enforces this). These are ground-truth welfare, "
+    "DISTINCT from the engagement-proxy reward the online learner optimizes: engagement is "
+    "evidence, not truth (V2 TDD 3.2), so mean_immediate_satisfaction can diverge from "
+    "reward_per_impression. This is the lean P14 slice; the full four-group welfare/session-health "
+    "framework and the engagement-vs-satisfaction experiment are Phase 15. Deterministic.";
+
 // p50/p95/p99/mean/max/samples of a LatencyStats as a JSON object (wall-clock, D9).
 nlohmann::json latencyJson(const LatencyStats &l) {
     return nlohmann::json{{"p50", l.p50Ms},   {"p95", l.p95Ms}, {"p99", l.p99Ms},
@@ -260,6 +271,18 @@ void ResultsWriter::writeSummaryJson(const ExperimentResult &result) {
                            {"alignment_recovery_round", a.alignmentRecoveryRound},
                            {"adaptation_window_regret", a.adaptationWindowRegret},
                            {"note", kAdaptationNote}};
+    }
+
+    // Hidden-user-welfare block (Phase 14, V2 TDD 4.3/6): PRESENT only under
+    // realism.latent_reactions, so a gate-off run's summary.json carries no `welfare` key
+    // (byte-identical to a pre-Phase-14 run's non-timing content, D17). Overall means only — the
+    // per-round breakdown and the full four-group CSVs are Phase 15.
+    if (result.welfare.configured) {
+        const WelfareReport &w = result.welfare;
+        j["welfare"] = {{"impressions", w.impressions},
+                        {"mean_immediate_satisfaction", w.meanSatisfaction},
+                        {"mean_regret", w.meanRegret},
+                        {"note", kWelfareNote}};
     }
 
     j["notes"] = {{"learning", result.learningEnabled ? kLearningEnabledNote : kLearningFrozenNote},

@@ -34,8 +34,34 @@ namespace {
 // with a missing key. Both directions are deliberate — this is not a "no new keys" gate, it is a
 // "no UNREVIEWED keys" gate.
 const std::set<std::string> kEventAllowlist = {
-    "user_id",     "reel_id", "creator_id", "type",       "watch_seconds",
-    "watch_ratio", "reward",  "timestamp",  "session_id",
+    // V1 observable fields.
+    "user_id",
+    "reel_id",
+    "creator_id",
+    "type",
+    "watch_seconds",
+    "watch_ratio",
+    "reward",
+    "timestamp",
+    "session_id",
+    // Realism V2 observable fields (V2 TDD 5, Phase 14) — consciously allowlisted as observables:
+    // feed position, request id/timestamp, playback start/finish/dwell, replay count, the
+    // comment/save/profile-visit engagement signals, the exploration flag, candidate-source
+    // provenance, and the P16 session-exit placeholder. NONE is a latent value (the LatentReaction
+    // reaches only the welfare metrics via the D18 evaluation carve-out).
+    "position_in_feed",
+    "request_id",
+    "request_timestamp",
+    "start_timestamp",
+    "finish_timestamp",
+    "dwell_seconds",
+    "replay_count",
+    "commented",
+    "saved",
+    "profile_visited",
+    "from_exploration",
+    "source_provenance",
+    "observed_exit_after_impression",
 };
 
 const std::set<std::string> kUserAllowlist = {
@@ -89,6 +115,21 @@ InteractionEvent fullyPopulatedEvent() {
     e.reward = 0.42F;
     e.timestamp = 123456;
     e.sessionId = SessionId{5};
+    // Realism V2 fields (Phase 14) at concrete non-default values, so a failing schema dump is
+    // meaningful and so the substring/round-trip checks exercise real spellings.
+    e.positionInFeed = 4;
+    e.requestId = 900001;
+    e.requestTimestamp = 123440;
+    e.startTimestamp = 123443;
+    e.finishTimestamp = 123455;
+    e.dwellSeconds = 14.5F;
+    e.replayCount = 2;
+    e.commented = true;
+    e.saved = true;
+    e.profileVisited = true;
+    e.fromExploration = true;
+    e.sourceProvenance = CandidateSource::Exploration;
+    e.observedExitAfterImpression = true;
     return e;
 }
 

@@ -206,6 +206,12 @@ struct RealismConfig {
     // Phase 13 gate: V2 multi-factor content and hidden user channels. On => generateDataset
     // augments reels/users from the new "archetypes"/"reels-v2"/"users-v2" streams (D19).
     bool contentV2 = false;
+    // Phase 14 gate: latent reactions + BehaviourModelV2. On => every impression computes a
+    // hidden LatentReaction (stream "satisfaction") from which observables are sampled
+    // conditionally (BehaviourModelV2 owns stream "behaviour" wholesale under this gate, D19);
+    // the V1 BehaviourModel is untouched and serves all gate-off runs. REQUIRES content_v2
+    // (throws at config load otherwise, D17).
+    bool latentReactions = false;
     // Size of the global language set (V2 TDD 4.1); language ids are 0..languages-1 with the
     // skewed distribution rr::languageWeights. Must be >= 1.
     uint32_t languages = 8;
@@ -213,6 +219,49 @@ struct RealismConfig {
     // configs may replace it wholesale. Must be non-empty.
     std::vector<ArchetypeSpec> archetypes = defaultArchetypeCatalog();
     bool operator==(const RealismConfig &) const = default;
+};
+
+// BehaviourModelV2 parameters (V2 TDD 4.3, Phase 14). The multi-channel base utility is a
+// weighted combination of per-channel matches (V2 TDD 4.2/4.3 mandate the channel weights be
+// config-driven); the exact formula is documented at rr::computeLatentReaction's definition
+// (latent_model.cpp). Observable-sampling propensities for the NEW V2 events (comment / save /
+// profile-visit) and the engagement-vs-truth wedge terms (social conformity, completed-because-
+// short) are config-driven too — they are the tuning surface the Phase 14 statistical signature
+// tests calibrate against. Defaults are the shipped operating point; tests must not assert these
+// exact values (tuning surface, not contract).
+struct BehaviourV2Config {
+    // Channel-match weights (dot products of user preference channels vs reel embeddings).
+    double topicWeight = 1.5;
+    double visualWeight = 0.6;
+    double musicWeight = 0.6;
+    double emotionalWeight = 0.5;
+    // Scalar content-value terms (each modulated by the matching hidden user preference).
+    double usefulnessWeight = 0.8;
+    double humourWeight = 0.5;
+    double noveltyWeight = 0.4;
+    double informationDensityWeight = 0.4;
+    // Controversy vs tolerance: penalty beyond tolerance, small boost within for high-tolerance
+    // users (V2 TDD 4.3).
+    double controversyPenaltyWeight = 0.9;
+    double controversyBoostWeight = 0.15;
+    // Language mismatch penalty (scaled by 1 - languageMismatchTolerance).
+    double languageMismatchPenalty = 0.5;
+    // Creator attachment (hidden style affinity — the V1 TDD 10.2 C term, hidden side).
+    double creatorAttachmentWeight = 0.4;
+    // Gaussian noise std on the latent utility (stream "satisfaction").
+    double latentNoiseStd = 0.30;
+    // Observable-sampling surface (Phase 14 task 3): base propensities for the new V2 events and
+    // the two mandated engagement-vs-truth wedges.
+    double commentPropensity = 0.04;
+    double savePropensity = 0.05;
+    double profileVisitPropensity = 0.03;
+    // Like-probability boost from VISIBLE popularity counters (social conformity, V2 TDD 3.2).
+    double socialConformityWeight = 0.10;
+    // Completed-because-short inflation (V2 TDD 3.2): completion boost for reels shorter than
+    // shortDurationSeconds, independent of the latent reaction.
+    double shortCompletionBoost = 0.8;
+    double shortDurationSeconds = 12.0;
+    bool operator==(const BehaviourV2Config &) const = default;
 };
 
 // Evaluation-harness parameters (TDD 19 / phase-4 task 5). The oracle exhaustively scores all
@@ -249,6 +298,7 @@ struct ExperimentConfig {
     DiversityConfig diversity;
     DriftConfig drift;
     BehaviourConfig behaviour;
+    BehaviourV2Config behaviourV2;
     RewardConfig reward;
     EvaluationConfig evaluation;
     RealismConfig realism;
@@ -284,6 +334,8 @@ void to_json(nlohmann::json &j, const EvaluationConfig &c);
 void from_json(const nlohmann::json &j, EvaluationConfig &c);
 void to_json(nlohmann::json &j, const RealismConfig &c);
 void from_json(const nlohmann::json &j, RealismConfig &c);
+void to_json(nlohmann::json &j, const BehaviourV2Config &c);
+void from_json(const nlohmann::json &j, BehaviourV2Config &c);
 void to_json(nlohmann::json &j, const RecommendationAlgorithm &a);
 void from_json(const nlohmann::json &j, RecommendationAlgorithm &a);
 void to_json(nlohmann::json &j, const ExperimentConfig &c);

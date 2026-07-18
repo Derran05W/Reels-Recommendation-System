@@ -36,14 +36,42 @@ const char *interactionTypeToString(InteractionType type) {
     return "impression";
 }
 
+// Candidate-source provenance -> string (V2 TDD 5, Phase 14). The elected representative source of
+// the served feed item rides on the InteractionEvent as an OBSERVABLE (it is a serving-time fact,
+// not hidden state); this is the only place the enumerator gets a serialized snake_case spelling.
+// Exhaustive over the seven CandidateSource enumerators; the trailing return is unreachable and
+// only keeps -Werror quiet, same idiom as interactionTypeToString.
+const char *candidateSourceToString(CandidateSource source) {
+    switch (source) {
+    case CandidateSource::VectorHNSW:
+        return "vector_hnsw";
+    case CandidateSource::VectorExact:
+        return "vector_exact";
+    case CandidateSource::Popular:
+        return "popular";
+    case CandidateSource::Trending:
+        return "trending";
+    case CandidateSource::Fresh:
+        return "fresh";
+    case CandidateSource::CreatorAffinity:
+        return "creator_affinity";
+    case CandidateSource::Exploration:
+        return "exploration";
+    }
+    return "vector_hnsw";
+}
+
 } // namespace
 
-// D18 leak-audit schema for InteractionEvent: every InteractionEvent member is observable (V1
-// carries no hidden field on this struct), so the emitted key set is a direct 1:1 snake_case
-// mapping of the nine members. tests/unit/leak_audit_test.cpp asserts this exact key set — ANY
-// field added to InteractionEvent (Phase 14 onward, V2 TDD S5) must be a conscious addition here
-// AND to that test's allowlist in the same commit; hidden/latent fields (satisfaction, regret,
-// archetype, ...) must never appear (V2 TDD S5: "Do not include hidden satisfaction directly").
+// D18 leak-audit schema for InteractionEvent. The nine V1 members plus the thirteen Realism V2
+// observable fields (V2 TDD 5, Phase 14: feed position, request id/timestamp, playback
+// start/finish/dwell, replay count, comment/save/profile-visit signals, exploration flag,
+// candidate-source provenance, and the P16 exit placeholder) — every one an OBSERVABLE serving- or
+// interaction-time fact. tests/unit/leak_audit_test.cpp asserts this exact key set; ANY field
+// added to InteractionEvent must be a conscious addition here AND to that test's allowlist in the
+// SAME commit. Hidden/latent fields (satisfaction, regret, archetype, fatigue, ...) must NEVER
+// appear (V2 TDD S5: "Do not include hidden satisfaction directly") — the latent LatentReaction
+// reaches only the welfare metrics through the D18 evaluation carve-out, never this struct.
 void to_json(nlohmann::json &j, const InteractionEvent &e) {
     j = nlohmann::json{
         {"user_id", e.userId.value},
@@ -55,6 +83,20 @@ void to_json(nlohmann::json &j, const InteractionEvent &e) {
         {"reward", e.reward},
         {"timestamp", e.timestamp},
         {"session_id", e.sessionId.value},
+        // --- Realism V2 observable fields (V2 TDD 5, Phase 14) ---
+        {"position_in_feed", e.positionInFeed},
+        {"request_id", e.requestId},
+        {"request_timestamp", e.requestTimestamp},
+        {"start_timestamp", e.startTimestamp},
+        {"finish_timestamp", e.finishTimestamp},
+        {"dwell_seconds", e.dwellSeconds},
+        {"replay_count", e.replayCount},
+        {"commented", e.commented},
+        {"saved", e.saved},
+        {"profile_visited", e.profileVisited},
+        {"from_exploration", e.fromExploration},
+        {"source_provenance", candidateSourceToString(e.sourceProvenance)},
+        {"observed_exit_after_impression", e.observedExitAfterImpression},
     };
 }
 

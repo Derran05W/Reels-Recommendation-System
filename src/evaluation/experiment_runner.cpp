@@ -107,9 +107,18 @@ ExperimentResult ExperimentRunner::run() {
     }
 
     // 2. Simulator, recommender, and oracle each on an INDEPENDENT named rng stream (D8) so adding
-    //    the oracle never perturbs the behaviour or recommender streams.
-    Simulator sim(config_.behaviour, config_.reward, forkRng(seed, "behaviour"),
-                  config_.learning.recentWindow, config_.ranking.trendingHalfLifeSeconds);
+    //    the oracle never perturbs the behaviour or recommender streams. Under
+    //    realism.latent_reactions (Phase 14) the V2 constructor additionally forks the NEW
+    //    "satisfaction" stream (D19) — gate-off runs fork exactly the V1 streams and stay
+    //    byte-identical (D17).
+    const bool latentReactions = config_.realism.latentReactions;
+    Simulator sim =
+        latentReactions
+            ? Simulator(config_.behaviour, config_.behaviourV2, config_.reward,
+                        forkRng(seed, "behaviour"), forkRng(seed, "satisfaction"),
+                        config_.learning.recentWindow, config_.ranking.trendingHalfLifeSeconds)
+            : Simulator(config_.behaviour, config_.reward, forkRng(seed, "behaviour"),
+                        config_.learning.recentWindow, config_.ranking.trendingHalfLifeSeconds);
     RecommenderDeps deps{ds.reels, ds.users, config_};
     std::unique_ptr<Recommender> recommender =
         makeRecommender(config_.algorithm, deps, forkRng(seed, "recommender"));
@@ -147,6 +156,17 @@ ExperimentResult ExperimentRunner::run() {
         double distErrorSum = 0.0;
     };
     std::vector<RetrievalAcc> retrievalByRound(rounds);
+    // Welfare accumulation (Phase 14, V2 TDD 4.3/6): per-round hidden satisfaction/regret sums
+    // from the latent stream, filled ONLY under realism.latent_reactions (evaluation carve-out,
+    // D18 — the latent never reaches any recommender-visible structure). Reduced into
+    // ExperimentResult::welfare (per-round + overall means) after the round loop and emitted as a
+    // gate-on-only summary block; the full four-group CSV framework is Phase 15.
+    struct WelfareAcc {
+        size_t impressions = 0;
+        double satisfactionSum = 0.0;
+        double regretSum = 0.0;
+    };
+    std::vector<WelfareAcc> welfareByRound(rounds);
     // Estimate<->hidden alignment (TDD 18.5), one mean per round measured after the round
     // completes.
     std::vector<double> alignmentByRound(rounds, 0.0);
@@ -381,7 +401,50 @@ ExperimentResult ExperimentRunner::run() {
                 // guaranteed no-op and stream-neutral (D8).
                 drift.maybeApply(ds.hiddenStates[u], static_cast<uint32_t>(user.totalInteractions));
 
-                const StepResult step = sim.step(user, ds.hiddenStates[u], reel, creator);
+                // Phase 14 (realism.latent_reactions): the V2 step computes the hidden
+                // LatentReaction and populates the V2 event fields; the latent flows ONLY into
+                // the welfare accumulators below (evaluation carve-out, D18). Gate-off takes the
+                // V1 step, byte-identical to pre-Phase-14 (D17).
+                LatentReaction latent;
+                StepResult stepStorage;
+                if (latentReactions) {
+                    const RankedReel &served = resp.reels[k];
+                    StepV2Inputs v2;
+                    v2.hiddenReel = &ds.hiddenReelStates[reelId.value];
+                    v2.positionInFeed = static_cast<uint32_t>(k);
+                    v2.requestId = static_cast<uint64_t>(requestCount);
+                    // requestTimestamp is the logical time the FEED REQUEST was served — the
+                    // single `req.requestTime` captured once above (== sim.now() before this feed
+                    // is consumed), the same value handed to the recommender. Using it (rather than
+                    // a per-impression sim.now(), which drifts forward as earlier items in the same
+                    // feed advance the clock) keeps requestTimestamp <= startTimestamp for every
+                    // item in the feed and makes all items of one feed share a request time.
+                    v2.requestTimestamp = req.requestTime;
+                    // Provenance election (documented rule): a feed item can carry several
+                    // candidate-source labels (it was retrieved by more than one source, Phase 8
+                    // semantics). We elect a SINGLE representative for the event: Exploration wins
+                    // if present (so the exploration flag and the provenance agree, and exploration
+                    // exposure is never masked by a co-occurring organic source); otherwise the
+                    // first (highest-priority) label the orchestrator recorded. Empty source list
+                    // (identity/no-orchestrator paths) defaults to the benign VectorHNSW.
+                    v2.fromExploration = false;
+                    v2.sourceProvenance =
+                        served.sources.empty() ? CandidateSource::VectorHNSW : served.sources[0];
+                    for (const CandidateSource s : served.sources) {
+                        if (s == CandidateSource::Exploration) {
+                            v2.fromExploration = true;
+                            v2.sourceProvenance = CandidateSource::Exploration;
+                        }
+                    }
+                    stepStorage = sim.stepV2(user, ds.hiddenStates[u], reel, creator, v2, latent);
+                    WelfareAcc &wacc = welfareByRound[round];
+                    wacc.impressions += 1;
+                    wacc.satisfactionSum += latent.immediateSatisfaction;
+                    wacc.regretSum += latent.regret;
+                } else {
+                    stepStorage = sim.step(user, ds.hiddenStates[u], reel, creator);
+                }
+                const StepResult &step = stepStorage;
 
                 // Online preference update (Phase 7): runs AFTER Simulator::step has recorded the
                 // interaction into user.recentInteractions, updating ONLY the three preference
@@ -561,6 +624,36 @@ ExperimentResult ExperimentRunner::run() {
     result.cumulativeRegret = totalRegretSum;
     result.finalEstimatedHiddenCosine =
         result.rounds.empty() ? 0.0 : result.rounds.back().meanEstimatedHiddenCosine;
+
+    // Hidden-user-welfare reduction (Phase 14, V2 TDD 4.3/6): per-round and overall means of the
+    // per-impression latent satisfaction/regret. Populated ONLY under realism.latent_reactions
+    // (evaluation carve-out, D18); a gate-off run leaves welfare.configured false and emits no
+    // `welfare` block (byte-identical to pre-Phase-14, D17). Deterministic (a pure reduction of
+    // sums the simulation already produced).
+    result.welfare.configured = latentReactions;
+    if (latentReactions) {
+        WelfareReport &w = result.welfare;
+        w.byRound.reserve(rounds);
+        std::size_t totalImpr = 0;
+        double totalSat = 0.0;
+        double totalReg = 0.0;
+        for (size_t r = 0; r < rounds; ++r) {
+            const WelfareAcc &wa = welfareByRound[r];
+            const double denom = wa.impressions > 0 ? static_cast<double>(wa.impressions) : 1.0;
+            WelfareRoundPoint p;
+            p.round = r;
+            p.impressions = wa.impressions;
+            p.meanSatisfaction = wa.impressions > 0 ? wa.satisfactionSum / denom : 0.0;
+            p.meanRegret = wa.impressions > 0 ? wa.regretSum / denom : 0.0;
+            w.byRound.push_back(p);
+            totalImpr += wa.impressions;
+            totalSat += wa.satisfactionSum;
+            totalReg += wa.regretSum;
+        }
+        w.impressions = totalImpr;
+        w.meanSatisfaction = totalImpr > 0 ? totalSat / static_cast<double>(totalImpr) : 0.0;
+        w.meanRegret = totalImpr > 0 ? totalReg / static_cast<double>(totalImpr) : 0.0;
+    }
 
     result.retrievalSampleCount = totalRetrievalSamples;
     if (totalRetrievalSamples > 0) {

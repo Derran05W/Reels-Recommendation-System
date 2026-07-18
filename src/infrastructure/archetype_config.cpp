@@ -178,7 +178,7 @@ std::vector<ArchetypeSpec> defaultArchetypeCatalog() {
          .visualCoherence = 0.50,
          .musicCoherence = 0.45,
          .emotionalCoherence = 0.45,
-         .satisfactionBias = 0.30,
+         .satisfactionBias = 0.45,
          .regretBias = -0.10});
 
     // Ragebait: high controversy + emotional intensity, NEGATIVE satisfaction, POSITIVE regret.

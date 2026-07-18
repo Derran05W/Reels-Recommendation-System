@@ -196,6 +196,27 @@ struct AdaptationReport {
     double adaptationWindowRegret = 0.0;
 };
 
+// Hidden-user-welfare accumulation (Phase 14, V2 TDD 4.3/6). Populated ONLY under
+// realism.latent_reactions (the evaluation carve-out, D18): the per-impression LatentReaction —
+// which never reaches any recommender-visible structure — is aggregated here into per-round and
+// overall mean immediate-satisfaction and mean regret. When `configured` is false the whole block
+// is absent from summary.json (byte-identical to a pre-Phase-14 run, D17). This is the lean P14
+// slice of V2 §6's "hidden user welfare" group; the full four-group CSV framework is Phase 15.
+struct WelfareRoundPoint {
+    std::size_t round = 0;
+    std::size_t impressions = 0;
+    double meanSatisfaction = 0.0; // mean LatentReaction.immediateSatisfaction over the round
+    double meanRegret = 0.0;       // mean LatentReaction.regret over the round
+};
+
+struct WelfareReport {
+    bool configured = false;       // true iff realism.latentReactions
+    std::size_t impressions = 0;   // total impressions with a latent reaction
+    double meanSatisfaction = 0.0; // over all impressions (0 if none)
+    double meanRegret = 0.0;       // over all impressions (0 if none)
+    std::vector<WelfareRoundPoint> byRound;
+};
+
 // Everything one experiment produced, in memory. The ResultsWriter serializes it to disk; the
 // simulate CLI prints headline lines from it. `directory` is the created <experiment-id> dir.
 struct ExperimentResult {
@@ -270,6 +291,11 @@ struct ExperimentResult {
     // with no drift events, in which case no adaptation keys/columns are written (byte-identical to
     // a pre-Phase-10 run).
     AdaptationReport adaptation;
+
+    // Hidden-user-welfare metrics (Phase 14, V2 TDD 4.3/6). `configured` is false for a gate-off
+    // run (realism.latent_reactions off), in which case no `welfare` key is written (byte-identical
+    // to a pre-Phase-14 run, D17).
+    WelfareReport welfare;
 };
 
 // Runs the end-to-end evaluation loop (TDD 20 + phase-4 task 4, phase-7 tasks 1/4) from a

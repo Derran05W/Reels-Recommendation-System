@@ -350,12 +350,16 @@ void from_json(const json &j, RecommendationAlgorithm &a) {
 }
 
 void to_json(json &j, const RealismConfig &c) {
-    j = json{{"content_v2", c.contentV2}, {"languages", c.languages}, {"archetypes", c.archetypes}};
+    j = json{{"content_v2", c.contentV2},
+             {"latent_reactions", c.latentReactions},
+             {"languages", c.languages},
+             {"archetypes", c.archetypes}};
 }
 
 void from_json(const json &j, RealismConfig &c) {
-    ensureKnownKeys(j, "realism", {"content_v2", "languages", "archetypes"});
+    ensureKnownKeys(j, "realism", {"content_v2", "latent_reactions", "languages", "archetypes"});
     readKey(j, "content_v2", c.contentV2);
+    readKey(j, "latent_reactions", c.latentReactions);
     readKey(j, "languages", c.languages);
     readKey(j, "archetypes", c.archetypes);
     if (c.languages == 0) {
@@ -364,6 +368,62 @@ void from_json(const json &j, RealismConfig &c) {
     if (c.archetypes.empty()) {
         throw std::invalid_argument("realism.archetypes must not be empty");
     }
+    // D17 gate dependency: latent reactions consume the V2 content/user factor model.
+    if (c.latentReactions && !c.contentV2) {
+        throw std::invalid_argument("realism.latent_reactions requires realism.content_v2");
+    }
+}
+
+void to_json(json &j, const BehaviourV2Config &c) {
+    j = json{{"topic_weight", c.topicWeight},
+             {"visual_weight", c.visualWeight},
+             {"music_weight", c.musicWeight},
+             {"emotional_weight", c.emotionalWeight},
+             {"usefulness_weight", c.usefulnessWeight},
+             {"humour_weight", c.humourWeight},
+             {"novelty_weight", c.noveltyWeight},
+             {"information_density_weight", c.informationDensityWeight},
+             {"controversy_penalty_weight", c.controversyPenaltyWeight},
+             {"controversy_boost_weight", c.controversyBoostWeight},
+             {"language_mismatch_penalty", c.languageMismatchPenalty},
+             {"creator_attachment_weight", c.creatorAttachmentWeight},
+             {"latent_noise_std", c.latentNoiseStd},
+             {"comment_propensity", c.commentPropensity},
+             {"save_propensity", c.savePropensity},
+             {"profile_visit_propensity", c.profileVisitPropensity},
+             {"social_conformity_weight", c.socialConformityWeight},
+             {"short_completion_boost", c.shortCompletionBoost},
+             {"short_duration_seconds", c.shortDurationSeconds}};
+}
+
+void from_json(const json &j, BehaviourV2Config &c) {
+    ensureKnownKeys(j, "behaviour_v2",
+                    {"topic_weight", "visual_weight", "music_weight", "emotional_weight",
+                     "usefulness_weight", "humour_weight", "novelty_weight",
+                     "information_density_weight", "controversy_penalty_weight",
+                     "controversy_boost_weight", "language_mismatch_penalty",
+                     "creator_attachment_weight", "latent_noise_std", "comment_propensity",
+                     "save_propensity", "profile_visit_propensity", "social_conformity_weight",
+                     "short_completion_boost", "short_duration_seconds"});
+    readKey(j, "topic_weight", c.topicWeight);
+    readKey(j, "visual_weight", c.visualWeight);
+    readKey(j, "music_weight", c.musicWeight);
+    readKey(j, "emotional_weight", c.emotionalWeight);
+    readKey(j, "usefulness_weight", c.usefulnessWeight);
+    readKey(j, "humour_weight", c.humourWeight);
+    readKey(j, "novelty_weight", c.noveltyWeight);
+    readKey(j, "information_density_weight", c.informationDensityWeight);
+    readKey(j, "controversy_penalty_weight", c.controversyPenaltyWeight);
+    readKey(j, "controversy_boost_weight", c.controversyBoostWeight);
+    readKey(j, "language_mismatch_penalty", c.languageMismatchPenalty);
+    readKey(j, "creator_attachment_weight", c.creatorAttachmentWeight);
+    readKey(j, "latent_noise_std", c.latentNoiseStd);
+    readKey(j, "comment_propensity", c.commentPropensity);
+    readKey(j, "save_propensity", c.savePropensity);
+    readKey(j, "profile_visit_propensity", c.profileVisitPropensity);
+    readKey(j, "social_conformity_weight", c.socialConformityWeight);
+    readKey(j, "short_completion_boost", c.shortCompletionBoost);
+    readKey(j, "short_duration_seconds", c.shortDurationSeconds);
 }
 
 void to_json(json &j, const ExperimentConfig &c) {
@@ -377,6 +437,7 @@ void to_json(json &j, const ExperimentConfig &c) {
              {"diversity", c.diversity},
              {"drift", c.drift},
              {"behaviour", c.behaviour},
+             {"behaviour_v2", c.behaviourV2},
              {"reward", c.reward},
              {"evaluation", c.evaluation},
              {"realism", c.realism}};
@@ -385,8 +446,8 @@ void to_json(json &j, const ExperimentConfig &c) {
 void from_json(const json &j, ExperimentConfig &c) {
     ensureKnownKeys(j, "<top-level>",
                     {"simulation", "recommendation", "algorithm", "hnsw", "ranking", "learning",
-                     "exploration", "diversity", "drift", "behaviour", "reward", "evaluation",
-                     "realism"});
+                     "exploration", "diversity", "drift", "behaviour", "behaviour_v2", "reward",
+                     "evaluation", "realism"});
     readKey(j, "simulation", c.simulation);
     readKey(j, "recommendation", c.recommendation);
     readKey(j, "algorithm", c.algorithm);
@@ -397,6 +458,7 @@ void from_json(const json &j, ExperimentConfig &c) {
     readKey(j, "diversity", c.diversity);
     readKey(j, "drift", c.drift);
     readKey(j, "behaviour", c.behaviour);
+    readKey(j, "behaviour_v2", c.behaviourV2);
     readKey(j, "reward", c.reward);
     readKey(j, "evaluation", c.evaluation);
     readKey(j, "realism", c.realism);

@@ -360,3 +360,35 @@ TEST(ConfigTest, RealismValidationThrows) {
                       {"simulation", {{"new_users", 10}, {"new_users_at", 2}}}};
     EXPECT_THROW(injection.get<ExperimentConfig>(), std::invalid_argument);
 }
+
+// --- Realism V2 Phase 14: latent-reactions gate + behaviour_v2 block ------------------------
+
+TEST(ConfigTest, LatentReactionsGateRequiresContentV2) {
+    // Default off; parses fine alongside content_v2.
+    ExperimentConfig def;
+    EXPECT_FALSE(def.realism.latentReactions);
+    json ok = {{"realism", {{"content_v2", true}, {"latent_reactions", true}}}};
+    EXPECT_TRUE(ok.get<ExperimentConfig>().realism.latentReactions);
+    // D17 gate dependency: latent_reactions without content_v2 fails at load.
+    json bad = {{"realism", {{"latent_reactions", true}}}};
+    EXPECT_THROW(bad.get<ExperimentConfig>(), std::invalid_argument);
+}
+
+TEST(ConfigTest, BehaviourV2BlockParsesRoundTripsAndRejectsUnknownKeys) {
+    ExperimentConfig def;
+    EXPECT_DOUBLE_EQ(def.behaviourV2.topicWeight, 1.5);
+    EXPECT_DOUBLE_EQ(def.behaviourV2.latentNoiseStd, 0.30);
+
+    json j = {{"behaviour_v2", {{"topic_weight", 2.0}, {"comment_propensity", 0.1}}}};
+    auto c = j.get<ExperimentConfig>();
+    EXPECT_DOUBLE_EQ(c.behaviourV2.topicWeight, 2.0);
+    EXPECT_DOUBLE_EQ(c.behaviourV2.commentPropensity, 0.1);
+    // Unspecified keys keep defaults.
+    EXPECT_DOUBLE_EQ(c.behaviourV2.musicWeight, def.behaviourV2.musicWeight);
+
+    json out = c;
+    EXPECT_EQ(out.get<ExperimentConfig>(), c);
+
+    json bad = {{"behaviour_v2", {{"topic_wight", 2.0}}}};
+    EXPECT_THROW(bad.get<ExperimentConfig>(), std::invalid_argument);
+}

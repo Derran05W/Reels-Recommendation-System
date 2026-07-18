@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "rr/domain/interaction.hpp"
 
 namespace rr {
@@ -32,6 +34,16 @@ struct BehaviourOutcome {
     float watchSeconds; // watchRatio * reel.durationSeconds
 
     InteractionType primaryType; // collapsed per the priority above
+
+    // --- Realism V2 observable signals (V2 TDD 4.3/5, Phase 14) ------------------------------
+    // Sampled by BehaviourModelV2 conditionally on the hidden LatentReaction, only when
+    // realism.latent_reactions is on; the defaults below are the gate-off values (the V1
+    // BehaviourModel never writes them, D17). primaryType keeps its V1 priority collapse — the
+    // V2 signals are carried by these flags, not by new InteractionType enumerators.
+    bool commented = false;      // wrote a comment (ragebait's signature co-signal)
+    bool saved = false;          // saved/bookmarked (a strong satisfaction-correlated signal)
+    bool profileVisited = false; // visited the creator's profile after watching
+    uint32_t replayCount = 0;    // whole extra plays beyond the first (watchRatio > 1)
 };
 
 } // namespace rr

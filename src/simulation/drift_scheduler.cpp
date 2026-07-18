@@ -1,5 +1,7 @@
 #include "rr/simulation/drift_scheduler.hpp"
 
+#include "rr/simulation/cohort_hash.hpp"
+
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -9,26 +11,9 @@ namespace rr {
 
 namespace {
 
-// hash01: deterministic UserId -> [0, 1) map, PINNED to the SplitMix64 finalizer so cohort
-// membership is portable across compilers/platforms and every work package can reproduce it
-// byte-for-byte. The body below is exactly rr::splitmix64(userId.value) (the same finalizer
-// rr::Rng seeds with) followed by the canonical 53-bit-mantissa scaling; it is inlined here rather
-// than calling infrastructure/random so the golden values are self-contained and cannot drift if
-// that helper is ever refactored. DO NOT change these constants — cohort membership is a
-// cross-package contract (the adaptation metrics split "drifted vs control" on it).
-//
-//   uint64_t x = static_cast<uint64_t>(userId.value) + 0x9E3779B97F4A7C15ULL;
-//   x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
-//   x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
-//   x ^= x >> 31;
-//   double u = static_cast<double>(x >> 11) * 0x1.0p-53;   // in [0, 1)
-double hash01(UserId userId) {
-    uint64_t x = static_cast<uint64_t>(userId.value) + 0x9E3779B97F4A7C15ULL;
-    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
-    x ^= x >> 31;
-    return static_cast<double>(x >> 11) * 0x1.0p-53; // [0, 1)
-}
+// Cohort membership uses the PINNED SplitMix64-finalizer hash rr::cohortHash01 (promoted to
+// simulation/cohort_hash.hpp in Phase 14 so the niche-treasure archetype reuses the same
+// mapping); golden tripwire values live in drift_scheduler_test.cpp.
 
 } // namespace
 
@@ -94,7 +79,7 @@ DriftScheduler::DriftScheduler(const DriftConfig &config, const std::vector<Topi
 }
 
 bool DriftScheduler::inCohort(UserId userId, double cohortLo, double cohortHi) {
-    const double h = hash01(userId);
+    const double h = cohortHash01(userId);
     return h >= cohortLo && h < cohortHi; // [lo, hi): lo inclusive, hi exclusive
 }
 

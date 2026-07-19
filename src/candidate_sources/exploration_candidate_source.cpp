@@ -32,9 +32,10 @@ Candidate makeCandidate(const Reel &reel, const Embedding &query) {
 
 ExplorationCandidateSource::ExplorationCandidateSource(const std::vector<Reel> &reels,
                                                        double epsilon, uint32_t poolCap,
-                                                       double freshWindowSeconds, Rng *rng)
-    : reels_(reels), epsilon_(epsilon), poolCap_(poolCap), freshWindowSeconds_(freshWindowSeconds),
-      rng_(rng) {}
+                                                       double freshWindowSeconds, Rng *rng,
+                                                       double enableAtDay)
+    : reels_(reels), epsilon_(epsilon), enableAtDay_(enableAtDay), poolCap_(poolCap),
+      freshWindowSeconds_(freshWindowSeconds), rng_(rng) {}
 
 std::vector<Candidate> ExplorationCandidateSource::generate(const User &user,
                                                             const RecommendationRequest &request) {
@@ -46,11 +47,24 @@ std::vector<Candidate> ExplorationCandidateSource::generate(const User &user,
         return candidates;
     }
 
+    // Phase 21 time gate (contracts §1): before day enableAtDay_ the EFFECTIVE epsilon is 0. The
+    // draw below still happens feedSize times regardless (step 2), and bernoulli(0) consumes the
+    // same uniform01 as bernoulli(epsilon_), so ONLY the outcomes flip — the draw count and stream
+    // alignment are identical to an ungated run, and the pre-day window reproduces epsilon=0
+    // exactly. enableAtDay_ < 0 (the default) leaves epsilon_ untouched at all times (pre-P21
+    // byte-identical). The day is floor(requestTime / 86400) computed in double so the unsigned
+    // Timestamp never underflows.
+    double effectiveEpsilon = epsilon_;
+    if (enableAtDay_ >= 0.0 &&
+        std::floor(static_cast<double>(request.requestTime) / 86400.0) < enableAtDay_) {
+        effectiveEpsilon = 0.0;
+    }
+
     // Contract step 2: draw EXACTLY feedSize per-slot gates, always, so the stream shape is
     // independent of epsilon and of the outcomes.
     std::size_t k = 0;
     for (std::size_t slot = 0; slot < request.feedSize; ++slot) {
-        if (rng_->bernoulli(epsilon_)) {
+        if (rng_->bernoulli(effectiveEpsilon)) {
             ++k;
         }
     }

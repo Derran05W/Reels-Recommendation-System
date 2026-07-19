@@ -1,0 +1,79 @@
+{
+  "description": "PHASE 21 SCENARIO filter_bubble (package A). This committed config IS the CONTROL arm; scripts/run_phase21_a.sh patches it into the treatment arm. Both arms share seed 42 and the identical generated world; only exploration.epsilon and the ranking weights differ. HYPOTHESIS: an exploit-only recommender (no exploration, similarity-dominant ranking) progressively narrows users' hidden interest distributions over the 9-day run relative to a recommender running shipped exploration+diversity defaults on the same world -- the classic filter-bubble pathology (V2 TDD 4.18, Tier-4 acceptance re: policy alters hidden preference distributions). MECHANISM: with exploration.epsilon=0 the ExplorationCandidateSource fires no out-of-preference slots, and a similarity-heavy ranking (similarity_weight 0.95 with every novelty/diversity/popularity/creator/exploration ranking signal and the repetition penalty zeroed) serves each user content maximally aligned to their CURRENT hidden preference; satisfaction-driven PreferenceEvolution::applyImpression then reinforces that narrow region every impression, compounding daily. The niche_treasure archetype and small/tail creators -- which reach users mainly via exploration/diversity injection -- lose exposure. EXPECTED SIGNATURE vs control: (1) per-day mean_preference_entropy (trailing column of longterm_metrics.csv) declines faster and to a lower day-8 value; (2) higher mean_preference_shift_from_initial (more distortion); (3) lower whole-run arch_niche_treasure exposure share; (4) lower whole-run tail_creator_share. Early days track loosely; arms diverge as evolution compounds. VERDICT CRITERIA: effect CONFIRMED if day-8 mean_preference_entropy(bubble) < control AND mean_preference_shift_from_initial(bubble) > control AND whole-run arch_niche_treasure(bubble) < control AND whole-run tail_creator_share(bubble) <= control. Report 'effect not observed' or 'partial' honestly if entropy/niche/tail directions fail to hold (e.g. the shipped diversity reranker, still on in both arms, compensates). ARMS: control = THIS config (algorithm hnsw_ranker_diversity COMPLETE mode; exploration.enabled=true, epsilon=0.05; ranking = shipped defaults similarity 0.50 / quality 0.10 / freshness 0.08 / popularity 0.07 / trending 0.08 / creator_affinity 0.07 / exploration 0.05 / repetition_penalty 0.15; diversity on, mmr_lambda 0.75). bubble = identical EXCEPT exploration.epsilon=0.0 and ranking patch {similarity_weight:0.95, quality_weight:0.0, freshness_weight:0.0, popularity_weight:0.0, trending_weight:0.0, creator_affinity_weight:0.0, exploration_weight:0.0, repetition_penalty:0.0}; exploration.enabled STAYS true so the source is registered and its per-slot bernoulli draws stay stream-aligned with control (epsilon=0 fires no slots). Pre-registered before any run per P21-CONTRACTS section 4.",
+  "simulation": {
+    "seed": 42,
+    "users": 10000,
+    "reels": 100000,
+    "creators": 5000,
+    "topics": 32,
+    "dimensions": 64,
+    "scheduler": "event_queue",
+    "horizon_seconds": 777600.0
+  },
+  "algorithm": "hnsw_ranker_diversity",
+  "recommendation": {
+    "feed_size": 10,
+    "vector_candidates": 500,
+    "popular_candidates": 100,
+    "fresh_candidates": 100,
+    "exploration_candidates": 50
+  },
+  "hnsw": {
+    "m": 16,
+    "ef_construction": 200,
+    "ef_search": 64
+  },
+  "ranking": {
+    "similarity_weight": 0.50,
+    "quality_weight": 0.10,
+    "freshness_weight": 0.08,
+    "popularity_weight": 0.07,
+    "trending_weight": 0.08,
+    "creator_affinity_weight": 0.07,
+    "exploration_weight": 0.05,
+    "repetition_penalty": 0.15
+  },
+  "learning": {
+    "long_term_rate": 0.02,
+    "session_rate": 0.15,
+    "recent_window": 20
+  },
+  "exploration": {
+    "enabled": true,
+    "epsilon": 0.05
+  },
+  "diversity": {
+    "enabled": true,
+    "max_per_creator": 2,
+    "max_per_topic": 3,
+    "mmr_lambda": 0.75
+  },
+  "scheduling": {
+    "open_stagger_seconds": 43200.0,
+    "return_delay_mean_seconds": 21600.0,
+    "return_delay_spread_rel": 0.5
+  },
+  "serving": {
+    "prefetch_depth": 10,
+    "refill_threshold": 0
+  },
+  "evolution": {
+    "eta_evo": 0.02
+  },
+  "retention": {
+    "enabled": true,
+    "churn_delay_threshold_seconds": 604800.0,
+    "hazard_floor": 0.02
+  },
+  "evaluation": {
+    "oracle_sample_rate": 0.02,
+    "retrieval_sample_rate": 0.02,
+    "ecosystem_metrics": true
+  },
+  "realism": {
+    "content_v2": true,
+    "latent_reactions": true,
+    "session_dynamics": true,
+    "preference_evolution": true
+  }
+}

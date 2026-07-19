@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -294,6 +295,13 @@ struct LongTermDayPoint {
                             // as the user's platformTrust trait)
     uint64_t cumulativeChurned = 0;
     double meanPreferenceShiftFromInitial = 0.0; // as-of day end
+    // Phase 21 (contracts §3): per-day mean per-user softmax topic-similarity entropy, snapshotted
+    // at day end — the SAME formula + temperature constant as the run-end
+    // mean_final_preference_entropy (the shared preferenceEntropy helper in
+    // event_driven_runner.cpp). The interest-diversity trajectory the failure-mode scenarios plot.
+    // Emitted as the TRAILING mean_preference_entropy column of longterm_metrics.csv (appended last
+    // so existing readers keep working).
+    double meanPreferenceEntropy = 0.0;
 };
 
 struct LongTermReport {
@@ -314,6 +322,49 @@ struct LongTermReport {
     double meanFinalPreferenceEntropy = 0.0;     // mean_u entropy of softmax over topic-centre
                                                  // cosine similarities (documented in impl)
     std::vector<LongTermDayPoint> byDay;         // longterm_metrics.csv rows
+};
+
+// Phase 21 ecosystem failure-mode metrics (contracts §2, V2 TDD §4.18/§6, D22 additive). FROZEN
+// SCHEMA: the scaffold fills these under the evaluation.ecosystem_metrics gate; the scenario
+// packages (non-C++) consume the frozen keys, so field names + comments are the shared
+// cross-package surface. `configured` is false unless evaluation.ecosystem_metrics is on (which
+// itself requires the event scheduler), in which case NO `ecosystem` summary block and NO
+// ecosystem_metrics.csv are written and the run is byte-identical to a run with the gate off (D17).
+// Everything is computed in the D18 evaluation carve-out (reads HiddenReelState.archetypeIndex +
+// niche band + rr::cohortHash01 on the hidden user id). kEcosystemArchetypeCount == 8 mirrors the
+// shipped catalog (V2 TDD 4.4), whose index order the frozen CSV columns pin; the scenarios keep
+// that catalog.
+inline constexpr std::size_t kEcosystemArchetypeCount = 8;
+
+struct EcosystemDayPoint {
+    uint32_t day = 0; // simulated day index from run start (contiguous, zero-impression days
+                      // emit a zero row for day-index continuity)
+    uint64_t impressions =
+        0; // that day's total impressions (disambiguates the 0-valued rates below)
+    double creatorHhi = 0.0; // Σ_c (that-day impressions of creator c / that-day total)²
+    // That day's impression share of creators OUTSIDE the top decile by CUMULATIVE impressions as
+    // of end-of-day (a small/new-creator proxy — no creator injection exists in event mode). See
+    // the runner for the exposed-creator-set + floor(N*0.1) + id-tiebreak definition.
+    double tailCreatorShare = 0.0;
+    // That day's impression share by hidden archetype, catalog index order (frozen 8: genuinely
+    // satisfying, useful, ragebait, clickbait, comfort, polished_irrelevant, niche_treasure,
+    // background_music). 0 for a zero-impression day.
+    std::array<double, kEcosystemArchetypeCount> archShare{};
+    // Among that day's niche impressions (reels with an active hidden niche band, i.e. the
+    // niche_treasure archetype), the share where rr::cohortHash01(userId) falls in the reel's
+    // hidden [centre-width, centre+width] band; 0 when the day has no niche impressions.
+    double nicheInCohortMatchRate = 0.0;
+};
+
+struct EcosystemReport {
+    bool configured = false;
+    double creatorHhiFinalDay = 0.0; // last simulated day's creator_hhi
+    double creatorHhiWholeRun = 0.0; // creator HHI over the whole run's impressions
+    double tailCreatorShareWholeRun =
+        0.0; // tail share over the whole run (decile by whole-run cum)
+    std::array<double, kEcosystemArchetypeCount> archShareWholeRun{}; // whole-run archetype shares
+    double nicheInCohortMatchRateWholeRun = 0.0;                      // whole-run niche match rate
+    std::vector<EcosystemDayPoint> byDay; // ecosystem_metrics.csv rows (one per simulated day)
 };
 
 // Everything one experiment produced, in memory. The ResultsWriter serializes it to disk; the
@@ -422,6 +473,13 @@ struct ExperimentResult {
     // pre-Phase-20 run (D17). Package B fills it under the gate; package C consumes the frozen §5
     // schema. See LongTermReport.
     LongTermReport longTerm;
+
+    // Phase 21 ecosystem failure-mode metrics (contracts §2, D22 additive). `configured` is false
+    // unless evaluation.ecosystem_metrics is on (event mode only), in which case no `ecosystem`
+    // block / ecosystem_metrics.csv is written and the run is byte-identical to a gate-off run
+    // (D17). The event runner fills it from the D18 evaluation carve-out; the scenario packages
+    // consume the frozen keys. See EcosystemReport.
+    EcosystemReport ecosystem;
 };
 
 // Runs the end-to-end evaluation loop (TDD 20 + phase-4 task 4, phase-7 tasks 1/4) from a

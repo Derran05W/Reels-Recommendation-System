@@ -225,16 +225,19 @@ void to_json(json &j, const ExplorationConfig &c) {
     j = json{{"enabled", c.enabled},
              {"epsilon", c.epsilon},
              {"fresh_window_seconds", c.freshWindowSeconds},
-             {"guaranteed_slots", c.guaranteedSlots}};
+             {"guaranteed_slots", c.guaranteedSlots},
+             {"enable_at_day", c.enableAtDay}};
 }
 
 void from_json(const json &j, ExplorationConfig &c) {
-    ensureKnownKeys(j, "exploration",
-                    {"enabled", "epsilon", "fresh_window_seconds", "guaranteed_slots"});
+    ensureKnownKeys(
+        j, "exploration",
+        {"enabled", "epsilon", "fresh_window_seconds", "guaranteed_slots", "enable_at_day"});
     readKey(j, "enabled", c.enabled);
     readKey(j, "epsilon", c.epsilon);
     readKey(j, "fresh_window_seconds", c.freshWindowSeconds);
     readKey(j, "guaranteed_slots", c.guaranteedSlots);
+    readKey(j, "enable_at_day", c.enableAtDay);
 }
 
 void to_json(json &j, const DiversityConfig &c) {
@@ -347,13 +350,16 @@ void from_json(const json &j, RewardConfig &c) {
 
 void to_json(json &j, const EvaluationConfig &c) {
     j = json{{"oracle_sample_rate", c.oracleSampleRate},
-             {"retrieval_sample_rate", c.retrievalSampleRate}};
+             {"retrieval_sample_rate", c.retrievalSampleRate},
+             {"ecosystem_metrics", c.ecosystemMetrics}};
 }
 
 void from_json(const json &j, EvaluationConfig &c) {
-    ensureKnownKeys(j, "evaluation", {"oracle_sample_rate", "retrieval_sample_rate"});
+    ensureKnownKeys(j, "evaluation",
+                    {"oracle_sample_rate", "retrieval_sample_rate", "ecosystem_metrics"});
     readKey(j, "oracle_sample_rate", c.oracleSampleRate);
     readKey(j, "retrieval_sample_rate", c.retrievalSampleRate);
+    readKey(j, "ecosystem_metrics", c.ecosystemMetrics);
 }
 
 const char *toString(RecommendationAlgorithm a) {
@@ -634,15 +640,16 @@ void to_json(json &j, const ExperimentConfig &c) {
              {"retention", c.retention},
              {"reward", c.reward},
              {"evaluation", c.evaluation},
-             {"realism", c.realism}};
+             {"realism", c.realism},
+             {"description", c.description}};
 }
 
 void from_json(const json &j, ExperimentConfig &c) {
     ensureKnownKeys(j, "<top-level>",
-                    {"simulation", "recommendation", "algorithm", "hnsw", "ranking", "learning",
-                     "exploration", "diversity", "drift", "behaviour", "behaviour_v2",
-                     "session_dynamics", "scheduling", "serving", "evolution", "retention",
-                     "reward", "evaluation", "realism"});
+                    {"simulation",   "recommendation",   "algorithm",  "hnsw",    "ranking",
+                     "learning",     "exploration",      "diversity",  "drift",   "behaviour",
+                     "behaviour_v2", "session_dynamics", "scheduling", "serving", "evolution",
+                     "retention",    "reward",           "evaluation", "realism", "description"});
     readKey(j, "simulation", c.simulation);
     readKey(j, "recommendation", c.recommendation);
     readKey(j, "algorithm", c.algorithm);
@@ -662,6 +669,14 @@ void from_json(const json &j, ExperimentConfig &c) {
     readKey(j, "reward", c.reward);
     readKey(j, "evaluation", c.evaluation);
     readKey(j, "realism", c.realism);
+    readKey(j, "description", c.description);
+    // Phase 21: the ecosystem metrics are reported per SIMULATED DAY, which only the event runner
+    // produces, so ecosystem_metrics requires the event scheduler (contracts §1). Fail fast at load
+    // (D10) rather than silently emitting an empty/day-less file under round_robin.
+    if (c.evaluation.ecosystemMetrics && c.simulation.scheduler != "event_queue") {
+        throw std::invalid_argument(
+            "evaluation.ecosystem_metrics requires simulation.scheduler='event_queue'");
+    }
     // Phase 13 scope guard: mid-simulation injection (Phase 8) predates the V2 content model and
     // would need V2 augmentation of injected entities on the injection streams — unsupported
     // until a phase needs it. Fail fast at load rather than silently generating injected

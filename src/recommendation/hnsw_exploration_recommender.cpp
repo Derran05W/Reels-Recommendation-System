@@ -18,9 +18,9 @@ HNSWExplorationRecommender::HNSWExplorationRecommender(const RecommenderDeps &de
       trendingSource_(reels_, deps.config.recommendation.trendingCandidates,
                       deps.config.ranking.trendingHalfLifeSeconds),
       creatorSource_(reels_, deps.config.recommendation.creatorAffinityCandidates),
-      explorationSource_(reels_, deps.config.exploration.epsilon,
-                         deps.config.recommendation.explorationCandidates,
-                         deps.config.exploration.freshWindowSeconds, &rng_),
+      explorationSource_(
+          reels_, deps.config.exploration.epsilon, deps.config.recommendation.explorationCandidates,
+          deps.config.exploration.freshWindowSeconds, &rng_, deps.config.exploration.enableAtDay),
       ranker_(reels_, deps.config.ranking, deps.config.realism.contentV2,
               deps.config.realism.personalizedDiversity),
       orchestrator_(

@@ -201,6 +201,48 @@ TEST(ConfigTest, EvaluationBlockParsesAndRejectsUnknownKeys) {
     }
 }
 
+TEST(ConfigTest, EcosystemMetricsRequiresEventQueue) {
+    // Phase 21 (contracts §1): default off (no constraint), on requires the event scheduler.
+    EXPECT_FALSE(ExperimentConfig{}.evaluation.ecosystemMetrics);
+
+    // On under round_robin (the default scheduler) is rejected at load (fail-fast, D10).
+    json bad = {{"evaluation", {{"ecosystem_metrics", true}}}};
+    try {
+        bad.get<ExperimentConfig>();
+        FAIL() << "expected throw";
+    } catch (const std::invalid_argument &e) {
+        std::string msg = e.what();
+        EXPECT_NE(msg.find("ecosystem_metrics"), std::string::npos);
+        EXPECT_NE(msg.find("event_queue"), std::string::npos);
+    }
+
+    // On under a valid event_queue stack is accepted and parsed.
+    json ok = {
+        {"simulation", {{"scheduler", "event_queue"}, {"horizon_seconds", 86400.0}}},
+        {"realism", {{"content_v2", true}, {"latent_reactions", true}, {"session_dynamics", true}}},
+        {"evaluation", {{"ecosystem_metrics", true}}}};
+    auto c = ok.get<ExperimentConfig>();
+    EXPECT_TRUE(c.evaluation.ecosystemMetrics);
+}
+
+TEST(ConfigTest, ExplorationEnableAtDayAndDescriptionRoundTrip) {
+    // Phase 21 (contracts §1/§4): both default to their inert values and round-trip additively.
+    EXPECT_DOUBLE_EQ(ExperimentConfig{}.exploration.enableAtDay, -1.0);
+    EXPECT_EQ(ExperimentConfig{}.description, "");
+
+    json j = {{"exploration", {{"enable_at_day", 2.0}}},
+              {"description", "HYPOTHESIS: x MECHANISM: y EXPECTED SIGNATURE: z VERDICT: w"}};
+    auto c = j.get<ExperimentConfig>();
+    EXPECT_DOUBLE_EQ(c.exploration.enableAtDay, 2.0);
+    EXPECT_EQ(c.description, "HYPOTHESIS: x MECHANISM: y EXPECTED SIGNATURE: z VERDICT: w");
+    // Round-trips through to_json/from_json unchanged, and the resolved config echoes the block.
+    json out = c;
+    EXPECT_EQ(out.get<ExperimentConfig>(), c);
+    EXPECT_EQ(out["description"], "HYPOTHESIS: x MECHANISM: y EXPECTED SIGNATURE: z VERDICT: w");
+    EXPECT_DOUBLE_EQ(out["exploration"]["enable_at_day"].get<double>(), 2.0);
+    EXPECT_FALSE(out["evaluation"]["ecosystem_metrics"].get<bool>());
+}
+
 TEST(ConfigTest, LearningDefaults) {
     // Phase 7 additions: learning is on by default; the frozen-estimates experiment arm sets
     // enabled=false. Lambda default sits mid TDD 11.3's suggested 0.85-0.95 range.

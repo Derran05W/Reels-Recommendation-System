@@ -1,0 +1,78 @@
+{
+  "simulation": {
+    "seed": 42,
+    "users": 10000,
+    "reels": 100000,
+    "creators": 5000,
+    "topics": 32,
+    "dimensions": 64,
+    "scheduler": "event_queue",
+    "horizon_seconds": 777600.0
+  },
+  "recommendation": {
+    "feed_size": 10,
+    "vector_candidates": 500,
+    "popular_candidates": 100,
+    "fresh_candidates": 100,
+    "exploration_candidates": 50
+  },
+  "hnsw": {
+    "m": 16,
+    "ef_construction": 200,
+    "ef_search": 64
+  },
+  "ranking": {
+    "similarity_weight": 0.5,
+    "quality_weight": 0.1,
+    "freshness_weight": 0.08,
+    "popularity_weight": 0.07,
+    "trending_weight": 0.08,
+    "creator_affinity_weight": 0.4,
+    "exploration_weight": 0.05,
+    "repetition_penalty": 0.15
+  },
+  "learning": {
+    "long_term_rate": 0.02,
+    "session_rate": 0.15,
+    "recent_window": 20
+  },
+  "exploration": {
+    "enabled": true,
+    "epsilon": 0.05
+  },
+  "diversity": {
+    "enabled": true,
+    "max_per_creator": 2,
+    "max_per_topic": 3,
+    "mmr_lambda": 0.75
+  },
+  "scheduling": {
+    "open_stagger_seconds": 43200.0,
+    "return_delay_mean_seconds": 21600.0,
+    "return_delay_spread_rel": 0.5
+  },
+  "serving": {
+    "prefetch_depth": 10,
+    "refill_threshold": 0
+  },
+  "evolution": {
+    "eta_evo": 0.02
+  },
+  "retention": {
+    "enabled": true,
+    "churn_delay_threshold_seconds": 604800.0,
+    "hazard_floor": 0.02
+  },
+  "evaluation": {
+    "oracle_sample_rate": 0.02,
+    "retrieval_sample_rate": 0.02,
+    "ecosystem_metrics": true
+  },
+  "realism": {
+    "content_v2": true,
+    "latent_reactions": true,
+    "session_dynamics": true,
+    "preference_evolution": true
+  },
+  "description": "HYPOTHESIS: A creator-affinity-heavy ranking policy with no diversity constraint concentrates a\nday's impressions on far fewer creators than the SAME affinity-heavy policy served through the\ndiversity-reranking path that enforces a hard <=2-per-creator-per-feed cap; the uncapped arm\nshould also show measurably more fatigue-driven session exits and lower session utility (U_s) as\nusers saturate on a small creator set.\nMECHANISM: ranking.creator_affinity_weight raised to 0.4 (from 0.07) on BOTH arms makes creator\naffinity the dominant non-similarity score term, pushing a user's historically-liked creators to\nthe top of every candidate pool. The `affinity` arm serves via hnsw_ranker (ranking only, no\nre-ranking pass). The `capped` arm serves the IDENTICAL config via hnsw_ranker_diversity\n(FullRecommender: exploration + the DiversityReranker's hard max_per_creator=2 constraint + MMR),\nwhich structurally prevents any one creator from filling more than 2 of the 10 feed slots per\nrequest regardless of how highly that creator scores.\nEXPECTED SIGNATURE: Materially higher creator_hhi (per-day and whole-run) in `affinity` vs\n`capped`; higher session_health.exit_type_shares.fatigue and lower\nsession_health.mean_session_utility (U_s) in `affinity` vs `capped`.\nVERDICT CRITERIA: CONFIRMED if creator_hhi is higher in `affinity` AND at least one of {fatigue\nexit share higher, mean_session_utility lower} holds in `affinity` vs `capped`. PARTIAL if only\nthe HHI gap appears without a session-health signature (the cap controls concentration but the\nwelfare channel doesn't register a difference at this scale/horizon). NOT OBSERVED if creator_hhi\nis not meaningfully higher in the uncapped arm."
+}

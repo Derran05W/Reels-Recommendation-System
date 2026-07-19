@@ -39,9 +39,9 @@ FullRecommender::FullRecommender(const RecommenderDeps &deps, Rng rng)
       creatorSource_(reels_, deps.config.recommendation.creatorAffinityCandidates),
       freshSource_(reels_, deps.config.recommendation.freshCandidates,
                    deps.config.exploration.freshWindowSeconds),
-      explorationSource_(reels_, deps.config.exploration.epsilon,
-                         deps.config.recommendation.explorationCandidates,
-                         deps.config.exploration.freshWindowSeconds, &rng_),
+      explorationSource_(
+          reels_, deps.config.exploration.epsilon, deps.config.recommendation.explorationCandidates,
+          deps.config.exploration.freshWindowSeconds, &rng_, deps.config.exploration.enableAtDay),
       ranker_(reels_, deps.config.ranking, deps.config.realism.contentV2,
               deps.config.realism.personalizedDiversity),
       reranker_(reels_, deps.config.diversity),

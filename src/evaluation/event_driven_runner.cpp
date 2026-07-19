@@ -1,6 +1,7 @@
 #include "rr/evaluation/event_driven_runner.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -12,6 +13,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -38,6 +40,7 @@
 #include "rr/recommendation/recommender.hpp"
 #include "rr/recommendation/recommender_factory.hpp"
 #include "rr/recommendation/vector_index.hpp"
+#include "rr/simulation/cohort_hash.hpp"
 #include "rr/simulation/dataset_generator.hpp"
 #include "rr/simulation/drift_scheduler.hpp"
 #include "rr/simulation/event_queue.hpp"
@@ -532,9 +535,12 @@ ExperimentResult EventDrivenRunner::run() {
     };
     std::vector<UserSessionAcc> userSessions;
     // Per-day END-OF-DAY population snapshots (mean trust over ALL users; mean within-world
-    // semantic shift), taken at day boundaries — mirroring the alignment snapshot.
+    // semantic shift; mean interest-diversity entropy), taken at day boundaries — mirroring the
+    // alignment snapshot. entropyByDay (P21, contracts §3) is the per-day mean of the SAME softmax
+    // topic-similarity entropy the run-end mean_final_preference_entropy uses.
     std::vector<double> trustByDay;
     std::vector<double> prefShiftByDay;
+    std::vector<double> entropyByDay;
     // First-churn day per user (-1 = never) -> per-day cumulative churn + the run-end churn rate.
     std::vector<long> churnDay;
     if (longTermGate) {
@@ -552,7 +558,29 @@ ExperimentResult EventDrivenRunner::run() {
         userSessions.resize(userCount);
         trustByDay.assign(numDays, 0.0);
         prefShiftByDay.assign(numDays, 0.0);
+        entropyByDay.assign(numDays, 0.0);
         churnDay.assign(userCount, -1);
+    }
+
+    // --- Phase 21 ecosystem failure-mode accumulators (contracts §2, D22 additive). Populated ONLY
+    //     under evaluation.ecosystem_metrics (which requires the event scheduler); a gate-off run
+    //     allocates nothing new and takes no new branch, so its event stream + output stay
+    //     byte-identical (D17). All reads are the D18 evaluation carve-out (hidden reel archetype /
+    //     niche band + rr::cohortHash01 on the hidden user id). ---
+    const bool ecosystemMetrics = config_.evaluation.ecosystemMetrics;
+    // One accumulator per simulated day: per-creator impressions (for creator HHI + the tail
+    // share's cumulative ranking), per-archetype impressions (index-order shares), niche
+    // impressions + in-cohort matches, and the day's total.
+    struct EcosystemDayAcc {
+        std::unordered_map<uint32_t, uint64_t> creatorImpressions;
+        std::array<uint64_t, kEcosystemArchetypeCount> archImpressions{};
+        uint64_t impressions = 0;
+        uint64_t nicheImpressions = 0;
+        uint64_t nicheMatches = 0;
+    };
+    std::vector<EcosystemDayAcc> ecoDay;
+    if (ecosystemMetrics) {
+        ecoDay.resize(numDays);
     }
 
     EventQueue queue;
@@ -611,24 +639,32 @@ ExperimentResult EventDrivenRunner::run() {
     };
 
     // Long-term per-day population snapshot (P20): mean trust over ALL users (uninitialized trust
-    // reads the platformTrust trait, contract §2/§5) and mean within-world semantic shift
-    // (1 - cos(p0, p_now)). Recomputed at each day boundary (~numDays times); cheap.
-    auto longTermSnapshot = [&](double &meanTrust, double &meanShift) {
+    // reads the platformTrust trait, contract §2/§5), mean within-world semantic shift
+    // (1 - cos(p0, p_now)), and (P21, contracts §3) mean interest-diversity entropy — the SAME
+    // preferenceEntropy helper + temperature the run-end mean_final_preference_entropy uses, so the
+    // last day's snapshot equals that run-end value. Recomputed at each day boundary (~numDays
+    // times); cheap.
+    auto longTermSnapshot = [&](double &meanTrust, double &meanShift, double &meanEntropy) {
         if (userCount == 0) {
             meanTrust = 0.0;
             meanShift = 0.0;
+            meanEntropy = 0.0;
             return;
         }
         double trustSum = 0.0;
         double shiftSum = 0.0;
+        double entropySum = 0.0;
         for (std::size_t u = 0; u < userCount; ++u) {
             const HiddenUserState &h = ds.hiddenStates[u];
             trustSum +=
                 h.retention.trust >= 0.0 ? h.retention.trust : static_cast<double>(h.platformTrust);
             shiftSum += 1.0 - cosineSim(initialSemPref[u], h.hiddenPreference);
+            entropySum += preferenceEntropy(h.hiddenPreference, ds.topics);
         }
-        meanTrust = trustSum / static_cast<double>(userCount);
-        meanShift = shiftSum / static_cast<double>(userCount);
+        const double inv = 1.0 / static_cast<double>(userCount);
+        meanTrust = trustSum * inv;
+        meanShift = shiftSum * inv;
+        meanEntropy = entropySum * inv;
     };
 
     // --- the single event dispatcher (one impression's worth of work per event) ---------------
@@ -843,6 +879,31 @@ ExperimentResult EventDrivenRunner::run() {
             wi.watchSeconds = step.outcome.watchSeconds;
             wi.archetypeIndex = ds.hiddenReelStates[reelId.value].archetypeIndex;
             welfareMetrics.add(dayIdx, wi);
+
+            // Phase 21 ecosystem accumulation (contracts §2, D18 evaluation carve-out): bucket this
+            // impression into the day's per-creator / per-archetype / niche tallies. Gate-on only —
+            // gate-off allocates no ecoDay and skips this entirely (byte-identical, D17). Niche
+            // membership reuses the simulator's OWN test (latent_model.cpp nicheCohortAdjust): a
+            // niche reel has nicheCohortWidth > 0, and the user is in-cohort iff
+            // |cohortHash01(userId) - centre| <= width (boundary inclusive), so the metric measures
+            // exactly the population the hidden niche satisfaction boost applies to.
+            if (ecosystemMetrics) {
+                const HiddenReelState &hr = ds.hiddenReelStates[reelId.value];
+                EcosystemDayAcc &eco = ecoDay[dayIdx];
+                eco.impressions += 1;
+                eco.creatorImpressions[reel.creatorId.value] += 1;
+                if (hr.archetypeIndex < kEcosystemArchetypeCount) {
+                    eco.archImpressions[hr.archetypeIndex] += 1;
+                }
+                if (hr.nicheCohortWidth > 0.0f) {
+                    eco.nicheImpressions += 1;
+                    const double h = cohortHash01(user.id);
+                    if (std::abs(h - static_cast<double>(hr.nicheCohortCentre)) <=
+                        static_cast<double>(hr.nicheCohortWidth)) {
+                        eco.nicheMatches += 1;
+                    }
+                }
+            }
 
             // P20-HOOK(evolution): exposure-driven preference evolution, applied once per
             // impression AFTER stepV2 (BehaviourModelV2), gate-on only. Draws ZERO rng (the
@@ -1106,10 +1167,12 @@ ExperimentResult EventDrivenRunner::run() {
             if (longTermGate) {
                 double mt = 0.0;
                 double ms = 0.0;
-                longTermSnapshot(mt, ms);
+                double me = 0.0;
+                longTermSnapshot(mt, ms, me);
                 for (std::size_t d = processedDay; d < dayIdx && d < numDays; ++d) {
                     trustByDay[d] = mt;
                     prefShiftByDay[d] = ms;
+                    entropyByDay[d] = me;
                 }
             }
         }
@@ -1137,10 +1200,12 @@ ExperimentResult EventDrivenRunner::run() {
     if (longTermGate) {
         double mt = 0.0;
         double ms = 0.0;
-        longTermSnapshot(mt, ms);
+        double me = 0.0;
+        longTermSnapshot(mt, ms, me);
         for (std::size_t d = (anyProcessed ? processedDay : 0); d < numDays; ++d) {
             trustByDay[d] = mt;
             prefShiftByDay[d] = ms;
+            entropyByDay[d] = me;
         }
     }
 
@@ -1444,6 +1509,7 @@ ExperimentResult EventDrivenRunner::run() {
             pt.meanTrust = trustByDay[d];
             pt.cumulativeChurned = cumChurned;
             pt.meanPreferenceShiftFromInitial = prefShiftByDay[d];
+            pt.meanPreferenceEntropy = entropyByDay[d];
             lt.byDay.push_back(pt);
         }
 
@@ -1546,6 +1612,141 @@ ExperimentResult EventDrivenRunner::run() {
                     r < trustByDay.size() ? trustByDay[r] : lt.meanFinalTrust;
             }
         }
+    }
+
+    // Phase 21 ecosystem failure-mode reduction (contracts §2, D22). Emitted ONLY under
+    // evaluation.ecosystem_metrics; a gate-off run leaves configured=false → no `ecosystem` block,
+    // no ecosystem_metrics.csv, byte-identical (D17). Per simulated day: creator HHI, the
+    // tail-creator share, the eight archetype impression shares, and the niche in-cohort match
+    // rate, plus the whole-run summary aggregates. Zero-impression days emit a zero row (day
+    // continuity).
+    result.ecosystem.configured = ecosystemMetrics;
+    if (ecosystemMetrics) {
+        EcosystemReport &eco = result.ecosystem;
+
+        // tail_creator_share (documented small/new-creator proxy — no creator injection exists in
+        // event mode): rank the EXPOSED creators (cumulative impressions > 0) by (cumulative DESC,
+        // creatorId ASC); the id tiebreak makes the decile boundary deterministic. The top
+        // floor(N * 0.1) are the HEAD; the tail is every other creator, and the metric is the
+        // `period` impressions landing on tail creators over the period total. N < 10 exposed
+        // creators ⇒ empty head ⇒ share 1.0 (honest: no creator is a "top decile" yet). `cum` is
+        // the cumulative-as-of-end-of-period ranking; `period` is that period's per-creator
+        // impressions (one simulated day, or the whole run).
+        auto tailShare = [](const std::unordered_map<uint32_t, uint64_t> &cum,
+                            const std::unordered_map<uint32_t, uint64_t> &period,
+                            uint64_t periodTotal) -> double {
+            if (periodTotal == 0) {
+                return 0.0;
+            }
+            std::vector<std::pair<uint32_t, uint64_t>> ranked;
+            ranked.reserve(cum.size());
+            for (const auto &kv : cum) {
+                if (kv.second > 0) {
+                    ranked.emplace_back(kv.first, kv.second);
+                }
+            }
+            std::sort(
+                ranked.begin(), ranked.end(),
+                [](const std::pair<uint32_t, uint64_t> &a, const std::pair<uint32_t, uint64_t> &b) {
+                    if (a.second != b.second) {
+                        return a.second > b.second; // cumulative impressions DESC
+                    }
+                    return a.first < b.first; // creatorId ASC (deterministic tiebreak)
+                });
+            const std::size_t head =
+                static_cast<std::size_t>(std::floor(static_cast<double>(ranked.size()) * 0.1));
+            std::unordered_set<uint32_t> headSet;
+            headSet.reserve(head);
+            for (std::size_t i = 0; i < head; ++i) {
+                headSet.insert(ranked[i].first);
+            }
+            uint64_t tailImpr = 0;
+            for (const auto &kv : period) {
+                if (headSet.find(kv.first) == headSet.end()) {
+                    tailImpr += kv.second;
+                }
+            }
+            return static_cast<double>(tailImpr) / static_cast<double>(periodTotal);
+        };
+
+        std::unordered_map<uint32_t, uint64_t> creatorCum; // cumulative as-of end-of-day d
+        std::array<uint64_t, kEcosystemArchetypeCount> archCum{};
+        uint64_t totalImpr = 0;
+        uint64_t totalNiche = 0;
+        uint64_t totalNicheMatch = 0;
+
+        eco.byDay.reserve(numDays);
+        for (std::size_t d = 0; d < numDays; ++d) {
+            const EcosystemDayAcc &acc = ecoDay[d];
+            for (const auto &kv : acc.creatorImpressions) {
+                creatorCum[kv.first] += kv.second; // advance the cumulative ranking through day d
+            }
+            EcosystemDayPoint pt;
+            pt.day = static_cast<uint32_t>(d);
+            pt.impressions = acc.impressions;
+            double hhi = 0.0;
+            if (acc.impressions > 0) {
+                const double inv = 1.0 / static_cast<double>(acc.impressions);
+                for (const auto &kv : acc.creatorImpressions) {
+                    const double share = static_cast<double>(kv.second) * inv;
+                    hhi += share * share;
+                }
+            }
+            pt.creatorHhi = hhi;
+            pt.tailCreatorShare = tailShare(creatorCum, acc.creatorImpressions, acc.impressions);
+            for (std::size_t a = 0; a < kEcosystemArchetypeCount; ++a) {
+                pt.archShare[a] = acc.impressions > 0
+                                      ? static_cast<double>(acc.archImpressions[a]) /
+                                            static_cast<double>(acc.impressions)
+                                      : 0.0;
+            }
+            pt.nicheInCohortMatchRate = acc.nicheImpressions > 0
+                                            ? static_cast<double>(acc.nicheMatches) /
+                                                  static_cast<double>(acc.nicheImpressions)
+                                            : 0.0;
+            eco.byDay.push_back(pt);
+
+            totalImpr += acc.impressions;
+            totalNiche += acc.nicheImpressions;
+            totalNicheMatch += acc.nicheMatches;
+            for (std::size_t a = 0; a < kEcosystemArchetypeCount; ++a) {
+                archCum[a] += acc.archImpressions[a];
+            }
+        }
+
+        // creator_hhi_final_day: the concentration on the LAST simulated day that HAD impressions.
+        // numDays = floor(horizon/86400)+1, so a clean-multiple horizon leaves a trailing
+        // zero-impression day whose HHI is a meaningless 0; the "final day" snapshot skips empty
+        // trailing days to report the true end-of-run concentration (0 only if the run had no
+        // impressions at all).
+        eco.creatorHhiFinalDay = 0.0;
+        for (auto it = eco.byDay.rbegin(); it != eco.byDay.rend(); ++it) {
+            if (it->impressions > 0) {
+                eco.creatorHhiFinalDay = it->creatorHhi;
+                break;
+            }
+        }
+        double wholeRunHhi = 0.0;
+        if (totalImpr > 0) {
+            const double inv = 1.0 / static_cast<double>(totalImpr);
+            for (const auto &kv : creatorCum) {
+                const double share = static_cast<double>(kv.second) * inv;
+                wholeRunHhi += share * share;
+            }
+        }
+        eco.creatorHhiWholeRun = wholeRunHhi;
+        // Whole-run tail share: the period IS the whole run, so creatorCum (each creator's
+        // whole-run total after the loop) is both the ranking cumulative AND the period
+        // impressions.
+        eco.tailCreatorShareWholeRun = tailShare(creatorCum, creatorCum, totalImpr);
+        for (std::size_t a = 0; a < kEcosystemArchetypeCount; ++a) {
+            eco.archShareWholeRun[a] =
+                totalImpr > 0 ? static_cast<double>(archCum[a]) / static_cast<double>(totalImpr)
+                              : 0.0;
+        }
+        eco.nicheInCohortMatchRateWholeRun =
+            totalNiche > 0 ? static_cast<double>(totalNicheMatch) / static_cast<double>(totalNiche)
+                           : 0.0;
     }
 
     // 9. Write the §26 output layout (ResultsWriter emits the event_mode block only when

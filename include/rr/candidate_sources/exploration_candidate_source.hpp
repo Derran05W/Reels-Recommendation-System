@@ -60,7 +60,7 @@ namespace rr {
 class ExplorationCandidateSource final : public CandidateGenerator {
   public:
     ExplorationCandidateSource(const std::vector<Reel> &reels, double epsilon, uint32_t poolCap,
-                               double freshWindowSeconds, Rng *rng);
+                               double freshWindowSeconds, Rng *rng, double enableAtDay = -1.0);
 
     std::vector<Candidate> generate(const User &user,
                                     const RecommendationRequest &request) override;
@@ -72,6 +72,15 @@ class ExplorationCandidateSource final : public CandidateGenerator {
   private:
     const std::vector<Reel> &reels_;
     double epsilon_;
+    // Phase 21 exploration time gate (contracts §1, config.exploration.enable_at_day). -1.0 (the
+    // default) disables the gate — epsilon_ is used verbatim, byte-identical to pre-P21. When >= 0,
+    // generate() uses EFFECTIVE epsilon = 0 for any request whose day floor(requestTime / 86400) is
+    // strictly before enableAtDay_, else epsilon_. The per-slot bernoulli gates ALWAYS draw
+    // feedSize times (contract step 2), and bernoulli(0) consumes the same uniform01 as
+    // bernoulli(epsilon_), so switching the effective epsilon changes only the gate outcomes — the
+    // draw count and the recommender-stream alignment are IDENTICAL to a run without the gate, and
+    // the effective-0 window reproduces today's epsilon=0 behaviour exactly.
+    double enableAtDay_;
     uint32_t poolCap_;
     double freshWindowSeconds_;
     Rng *rng_; // non-owning; the owning recommender's per-request stream (D8)

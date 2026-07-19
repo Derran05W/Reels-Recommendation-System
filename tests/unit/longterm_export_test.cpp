@@ -113,7 +113,7 @@ TEST(LongTermSchemaTest, LongtermCsvHeaderAndRowShape) {
     ASSERT_FALSE(lines.empty());
     EXPECT_EQ(lines[0],
               "day,sessions,active_users,sessions_per_active_user,mean_session_satisfaction,mean_"
-              "trust,cumulative_churned,mean_pref_shift_from_initial");
+              "trust,cumulative_churned,mean_pref_shift_from_initial,mean_preference_entropy");
     // One row per simulated day (byDay), plus the header. numDays = floor(horizon/86400)+1 = 4.
     EXPECT_EQ(lines.size(), r.longTerm.byDay.size() + 1);
     EXPECT_EQ(r.longTerm.byDay.size(), 4u);

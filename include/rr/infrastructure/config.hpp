@@ -174,6 +174,18 @@ struct LearningConfig {
 struct ExplorationConfig {
     bool enabled = true;
     double epsilon = 0.05;
+    // Phase 21 exploration time gate (contracts §1). Default -1.0 = NO time gating: behaviour is
+    // exactly as before at all times. When >= 0: for any feed request with timestamp t where
+    // floor(t / 86400) < enable_at_day, the ExplorationCandidateSource's per-slot epsilon gates use
+    // EFFECTIVE epsilon = 0; at/after that simulated day, the configured `epsilon`. The per-slot
+    // gates already draw bernoulli(epsilon) UNCONDITIONALLY for every slot, so the draw count and
+    // recommender-stream alignment are IDENTICAL to a run without the gate — only the gate OUTCOMES
+    // flip, and effective-0 outcomes reproduce today's epsilon=0 behaviour exactly (bernoulli(0)
+    // consumes the same uniform01 draw as bernoulli(epsilon)). This lets the exploration-recovery
+    // scenario switch exploration on partway through the run on the SAME world/seed. Consumed
+    // inside ExplorationCandidateSource via the request timestamp; documented there at the epsilon
+    // member.
+    double enableAtDay = -1.0;
     // Recency window (simulated seconds) defining a "recently created" reel for the Fresh
     // candidate source (TDD 12.5) and the exploration source's random-fresh mode (TDD 12.7):
     // a reel qualifies at request time t iff createdAt >= t - fresh_window_seconds. An addition
@@ -445,6 +457,13 @@ struct EvaluationConfig {
     // compares the recommender's vector index against exact ground truth (Recall@K, distance
     // error). Exact search over the full corpus per sample keeps this a sampled measurement.
     double retrievalSampleRate = 0.02;
+    // Phase 21 (contracts §2, D22 additive): emit the per-simulated-day ecosystem_metrics.csv +
+    // the `ecosystem` summary block (creator HHI, tail-creator share, per-archetype impression
+    // shares, niche-in-cohort match rate — the failure-mode scenario time series). Load-validation:
+    // requires simulation.scheduler == "event_queue" (the metrics are per SIMULATED DAY, so they
+    // need the event runner's day semantics). Default OFF => byte-identical output for every
+    // existing run (D17); the accumulators and file are entirely behind this gate.
+    bool ecosystemMetrics = false;
     bool operator==(const EvaluationConfig &) const = default;
 };
 
@@ -484,6 +503,12 @@ struct ExperimentConfig {
     RewardConfig reward;
     EvaluationConfig evaluation;
     RealismConfig realism;
+    // Phase 21 scenario pre-registration carrier (contracts §4). A free-text top-level string,
+    // default "", that a scenario config uses to record its pre-registered hypothesis / mechanism /
+    // expected signature / verdict criteria BEFORE any run. Additive and purely documentary — no
+    // subsystem reads it — but round-tripped through to_json so every experiment's fully-resolved
+    // config.json echoes the block it was run under (the audit trail for the failure-mode suite).
+    std::string description;
     bool operator==(const ExperimentConfig &) const = default;
 };
 

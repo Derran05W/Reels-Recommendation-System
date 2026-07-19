@@ -1,0 +1,78 @@
+{
+  "simulation": {
+    "seed": 42,
+    "users": 10000,
+    "reels": 100000,
+    "creators": 5000,
+    "topics": 32,
+    "dimensions": 64,
+    "scheduler": "event_queue",
+    "horizon_seconds": 777600.0
+  },
+  "recommendation": {
+    "feed_size": 10,
+    "vector_candidates": 500,
+    "popular_candidates": 100,
+    "fresh_candidates": 100,
+    "exploration_candidates": 50
+  },
+  "hnsw": {
+    "m": 16,
+    "ef_construction": 200,
+    "ef_search": 64
+  },
+  "ranking": {
+    "similarity_weight": 0.5,
+    "quality_weight": 0.1,
+    "freshness_weight": 0.08,
+    "popularity_weight": 0.07,
+    "trending_weight": 0.08,
+    "creator_affinity_weight": 0.07,
+    "exploration_weight": 0.05,
+    "repetition_penalty": 0.15
+  },
+  "learning": {
+    "long_term_rate": 0.02,
+    "session_rate": 0.15,
+    "recent_window": 20
+  },
+  "exploration": {
+    "enabled": true,
+    "epsilon": 0.05
+  },
+  "diversity": {
+    "enabled": true,
+    "max_per_creator": 2,
+    "max_per_topic": 3,
+    "mmr_lambda": 0.75
+  },
+  "scheduling": {
+    "open_stagger_seconds": 43200.0,
+    "return_delay_mean_seconds": 21600.0,
+    "return_delay_spread_rel": 0.5
+  },
+  "serving": {
+    "prefetch_depth": 10,
+    "refill_threshold": 0
+  },
+  "evolution": {
+    "eta_evo": 0.02
+  },
+  "retention": {
+    "enabled": true,
+    "churn_delay_threshold_seconds": 604800.0,
+    "hazard_floor": 0.02
+  },
+  "evaluation": {
+    "oracle_sample_rate": 0.02,
+    "retrieval_sample_rate": 0.02,
+    "ecosystem_metrics": true
+  },
+  "realism": {
+    "content_v2": true,
+    "latent_reactions": true,
+    "session_dynamics": true,
+    "preference_evolution": true
+  },
+  "description": "HYPOTHESIS: Raising the ranking policy's weight on raw popularity (and correspondingly lowering\npersonalized-similarity weight) lets already-popular creators/reels accumulate a compounding\nshare of impressions across simulated days, at the expense of newer/smaller creators, relative to\nthe base-weight control on the identical world.\nMECHANISM: Every feed-serving ranking pass scores candidates with ranking.popularity_weight on\nthe reel's (accumulating) popularity signal. Under a popularity-heavy weight (0.5, up from 0.07),\nreels/creators that already have more impressions rank higher on EVERY subsequent request,\nmechanically directing more of each day's impressions to the already-popular set (a rich-get-\nricher feedback loop), while similarity_weight (down from 0.50 to 0.30) proportionally weakens\nthe personalized/relevance counterweight that would otherwise let long-tail content surface via\ngood topic/user match.\nEXPECTED SIGNATURE: Day-over-day rising creator_hhi in the popularity arm vs a flatter/lower\ntrajectory in control; falling tail_creator_share (impression share of creators outside the\ncumulative top decile, contracts \u00a72) in the popularity arm relative to control, read as a\nnew/small-creator exposure-decay proxy.\nVERDICT CRITERIA: CONFIRMED if by the final simulated day the popularity arm's creator_hhi\nexceeds control's AND tail_creator_share is lower than control's (both directions). PARTIAL if\nonly one of the two metrics moves in the hypothesized direction. NOT OBSERVED if neither metric\ndiverges from control beyond a small/noise-level margin (same seed/world, so any divergence is\nattributable to the weight change, but a negligible-magnitude move is reported honestly as\nnot-observed/inconclusive rather than confirmed)."
+}

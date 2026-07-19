@@ -256,6 +256,39 @@ const char *kLongTermNote =
     "within-world "
     "view; the cross-run distortion is the headline. All non-timing fields are deterministic.";
 
+// Phase 21 frozen archetype names (contracts §2), catalog index order (V2 TDD 4.4). Shared by the
+// ecosystem_metrics.csv `arch_*` columns and the `ecosystem.arch_share_whole_run` summary object so
+// the two stay consistent; the P21 scenarios keep the shipped 8-archetype catalog these pin.
+const char *kEcosystemArchNames[8] = {
+    "genuinely_satisfying", "useful",         "ragebait",        "clickbait", "comfort",
+    "polished_irrelevant",  "niche_treasure", "background_music"};
+
+const char *kEcosystemNote =
+    "Ecosystem failure-mode metrics (Phase 21, V2 TDD §4.18/§6, contracts §2, D22). Present ONLY "
+    "under evaluation.ecosystem_metrics (event mode); a run with the gate off carries no "
+    "`ecosystem` "
+    "block and no ecosystem_metrics.csv (byte-identical, D17). creator_hhi = Σ_c (creator c's "
+    "share "
+    "of that period's impressions)²; tail_creator_share = the period's impression share of "
+    "creators "
+    "OUTSIDE the top decile by CUMULATIVE impressions as of period end (a small/new-creator proxy "
+    "— "
+    "exposed creators ranked by cumulative impressions DESC, creatorId ASC on ties, the top "
+    "floor(N*0.1) are the head, N<10 ⇒ empty head ⇒ share 1.0); arch_share_whole_run is keyed by "
+    "the "
+    "eight catalog archetypes in index order (evaluation carve-out via the hidden archetype "
+    "index); "
+    "niche_in_cohort_match_rate = among niche-band impressions, the share where "
+    "cohortHash01(userId) "
+    "falls in the reel's hidden [centre-width, centre+width] band (0 with no niche impressions, "
+    "the "
+    "impressions column disambiguating). creator_hhi_final_day is the concentration on the last "
+    "simulated day that HAD impressions (empty trailing days from a clean-multiple horizon are "
+    "skipped); the *_whole_run keys aggregate over the whole run's impressions. Per-day rows are "
+    "in "
+    "ecosystem_metrics.csv (zero-impression days emit a zero row for day-index continuity). All "
+    "fields are deterministic.";
+
 // p50/p95/p99/mean/max/samples of a LatencyStats as a JSON object (wall-clock, D9).
 nlohmann::json latencyJson(const LatencyStats &l) {
     return nlohmann::json{{"p50", l.p50Ms},   {"p95", l.p95Ms}, {"p99", l.p99Ms},
@@ -608,6 +641,26 @@ void ResultsWriter::writeSummaryJson(const ExperimentResult &result) {
                           {"note", kLongTermNote}};
     }
 
+    // Ecosystem failure-mode block (Phase 21, contracts §2, D22 additive): PRESENT only when
+    // evaluation.ecosystem_metrics is on (event mode), so a gate-off run's summary.json carries no
+    // `ecosystem` key (byte-identical, D17). Frozen keys; arch_share_whole_run is an object keyed
+    // by the eight catalog archetype names in index order. Appended after long_term so nothing
+    // shifts.
+    if (result.ecosystem.configured) {
+        const EcosystemReport &e = result.ecosystem;
+        nlohmann::json archShareWholeRun = nlohmann::json::object();
+        for (std::size_t a = 0; a < kEcosystemArchetypeCount; ++a) {
+            archShareWholeRun[kEcosystemArchNames[a]] = e.archShareWholeRun[a];
+        }
+        j["ecosystem"] = {
+            {"creator_hhi_final_day", e.creatorHhiFinalDay},
+            {"creator_hhi_whole_run", e.creatorHhiWholeRun},
+            {"tail_creator_share_whole_run", e.tailCreatorShareWholeRun},
+            {"arch_share_whole_run", archShareWholeRun},
+            {"niche_in_cohort_match_rate_whole_run", e.nicheInCohortMatchRateWholeRun},
+            {"note", kEcosystemNote}};
+    }
+
     j["notes"] = {{"learning", result.learningEnabled ? kLearningEnabledNote : kLearningFrozenNote},
                   {"baseline_flags", kBaselineFlagsNote}};
 
@@ -844,14 +897,40 @@ void ResultsWriter::writeLongTermMetricsCsv(const ExperimentResult &result) {
     // empty (package B fills it), so only the header row is written — a well-formed, deterministic
     // file.
     std::ofstream csv(result.directory / "longterm_metrics.csv");
+    // Phase 21 (contracts §3): mean_preference_entropy is appended LAST so existing readers of the
+    // P20 columns keep working; it is the per-day mean interest-diversity entropy (same formula as
+    // the run-end mean_final_preference_entropy). This trailing column appears whenever long_term
+    // is configured — an intended additive schema change to this P20-gated file (a gates-off/V1 run
+    // never writes longterm_metrics.csv at all, so D17 byte-identity is unaffected).
     csv << "day,sessions,active_users,sessions_per_active_user,mean_session_satisfaction,mean_"
            "trust,"
-           "cumulative_churned,mean_pref_shift_from_initial\n";
+           "cumulative_churned,mean_pref_shift_from_initial,mean_preference_entropy\n";
     for (const LongTermDayPoint &p : result.longTerm.byDay) {
         csv << p.day << ',' << p.sessions << ',' << p.activeUsers << ','
             << num(p.sessionsPerActiveUser) << ',' << num(p.meanSessionSatisfaction) << ','
             << num(p.meanTrust) << ',' << p.cumulativeChurned << ','
-            << num(p.meanPreferenceShiftFromInitial) << '\n';
+            << num(p.meanPreferenceShiftFromInitial) << ',' << num(p.meanPreferenceEntropy) << '\n';
+    }
+}
+
+void ResultsWriter::writeEcosystemMetricsCsv(const ExperimentResult &result) {
+    // Ecosystem failure-mode group, per simulated day (Phase 21, contracts §2). Written ONLY under
+    // evaluation.ecosystem_metrics. FROZEN header (exact string below); one row per simulated day
+    // with the day's creator HHI, tail-creator share, the eight archetype impression shares in
+    // catalog index order, and the niche in-cohort match rate. Zero-impression days emit a zero row
+    // (day-index continuity). Deterministic (num() fixed precision, classic locale): byte-identical
+    // across same-seed runs.
+    std::ofstream csv(result.directory / "ecosystem_metrics.csv");
+    csv << "day,impressions,creator_hhi,tail_creator_share,arch_genuinely_satisfying,arch_useful,"
+           "arch_ragebait,arch_clickbait,arch_comfort,arch_polished_irrelevant,arch_niche_treasure,"
+           "arch_background_music,niche_in_cohort_match_rate\n";
+    for (const EcosystemDayPoint &p : result.ecosystem.byDay) {
+        csv << p.day << ',' << p.impressions << ',' << num(p.creatorHhi) << ','
+            << num(p.tailCreatorShare);
+        for (std::size_t a = 0; a < kEcosystemArchetypeCount; ++a) {
+            csv << ',' << num(p.archShare[a]);
+        }
+        csv << ',' << num(p.nicheInCohortMatchRate) << '\n';
     }
 }
 
@@ -924,6 +1003,12 @@ void ResultsWriter::writeAll(const ExperimentResult &result, const RunMetadata &
     // longterm_metrics.csv and every EXISTING file is byte-identical (D17).
     if (result.longTerm.configured) {
         writeLongTermMetricsCsv(result);
+    }
+    // Phase 21 ecosystem file (contracts §2): written ONLY under evaluation.ecosystem_metrics
+    // (event mode), so a gate-off run's output directory carries no ecosystem_metrics.csv and every
+    // EXISTING file is byte-identical (D17).
+    if (result.ecosystem.configured) {
+        writeEcosystemMetricsCsv(result);
     }
     writeMetadataJson(result.directory, meta);
 }

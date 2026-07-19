@@ -99,6 +99,15 @@ class ResultsWriter {
     // cumulative_churned, mean_pref_shift_from_initial. A gates-off run writes no
     // longterm_metrics.csv, so its output directory is byte-identical to a pre-Phase-20 run (D17).
     static void writeLongTermMetricsCsv(const ExperimentResult &result);
+    // Phase 21 (contracts §2, D22). Written by writeAll ONLY when evaluation.ecosystem_metrics is
+    // on (result.ecosystem.configured, event mode); exposed here for targeted tests. Deterministic
+    // (fixed precision, classic locale). ecosystem_metrics.csv: per simulated day — the FROZEN
+    // header day,impressions,creator_hhi,tail_creator_share,arch_genuinely_satisfying,arch_useful,
+    // arch_ragebait,arch_clickbait,arch_comfort,arch_polished_irrelevant,arch_niche_treasure,
+    // arch_background_music,niche_in_cohort_match_rate. A gate-off run writes no
+    // ecosystem_metrics.csv, so its output directory is byte-identical to a run without the gate
+    // (D17).
+    static void writeEcosystemMetricsCsv(const ExperimentResult &result);
 
     // Per-user hidden-preference export row (Phase 20, contract §5). One row per user; the writer
     // emits them in the caller-provided order (the event runner sorts ascending user_id).

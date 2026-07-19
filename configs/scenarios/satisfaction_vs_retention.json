@@ -1,0 +1,78 @@
+{
+  "simulation": {
+    "seed": 42,
+    "users": 10000,
+    "reels": 100000,
+    "creators": 5000,
+    "topics": 32,
+    "dimensions": 64,
+    "scheduler": "event_queue",
+    "horizon_seconds": 777600.0
+  },
+  "recommendation": {
+    "feed_size": 10,
+    "vector_candidates": 500,
+    "popular_candidates": 100,
+    "fresh_candidates": 100,
+    "exploration_candidates": 50
+  },
+  "hnsw": {
+    "m": 16,
+    "ef_construction": 200,
+    "ef_search": 64
+  },
+  "ranking": {
+    "similarity_weight": 0.5,
+    "quality_weight": 0.1,
+    "freshness_weight": 0.08,
+    "popularity_weight": 0.07,
+    "trending_weight": 0.08,
+    "creator_affinity_weight": 0.07,
+    "exploration_weight": 0.05,
+    "repetition_penalty": 0.15
+  },
+  "learning": {
+    "long_term_rate": 0.02,
+    "session_rate": 0.15,
+    "recent_window": 20
+  },
+  "exploration": {
+    "enabled": true,
+    "epsilon": 0.05
+  },
+  "diversity": {
+    "enabled": true,
+    "max_per_creator": 2,
+    "max_per_topic": 3,
+    "mmr_lambda": 0.75
+  },
+  "scheduling": {
+    "open_stagger_seconds": 43200.0,
+    "return_delay_mean_seconds": 21600.0,
+    "return_delay_spread_rel": 0.5
+  },
+  "serving": {
+    "prefetch_depth": 10,
+    "refill_threshold": 0
+  },
+  "evolution": {
+    "eta_evo": 0.02
+  },
+  "retention": {
+    "enabled": true,
+    "churn_delay_threshold_seconds": 604800.0,
+    "hazard_floor": 0.02
+  },
+  "evaluation": {
+    "oracle_sample_rate": 0.02,
+    "retrieval_sample_rate": 0.02,
+    "ecosystem_metrics": true
+  },
+  "realism": {
+    "content_v2": true,
+    "latent_reactions": true,
+    "session_dynamics": true,
+    "preference_evolution": true
+  },
+  "description": "PHASE 21 SCENARIO \u2014 SATISFACTION-VS-RETENTION FRONTIER (Package B; V2 TDD s4.18 / s10 item 7; contracts s4). Base: configs/realism-medium-retention.json + evaluation.ecosystem_metrics=true, seed 42, algorithm hnsw_ranker, event mode, DEFAULT archetype catalog. FIVE arms on ONE identical world; only ranking weights differ.\n\nHYPOTHESIS: a retention/welfare FRONTIER exists \u2014 sweeping ranking weight from the engagement preset (l=0) to the satisfaction-proxy preset (l=1) trades engagement-side outcomes (retention_7d, sessions/user/day) against welfare-side outcomes (mean hidden satisfaction, session utility U_s). The engagement end maximizes retention/time-on-app; the proxy end maximizes hidden welfare; comfort-content dynamics surface in archetype shares (arch_comfort).\n\nMECHANISM / BLEND RULE: ranking weights are linearly interpolated per-key over the UNION of the engagement and proxy patch keys (17 keys) at l in {0, 0.25, 0.5, 0.75, 1}. For each union key, value(l) = (1-l)*E + l*P, where E = engagement-patch value if the key is in the engagement patch ELSE the BASE config's resolved default, and P = proxy-patch value if the key is in the proxy patch ELSE the BASE default. Thus l=0 reproduces the pure engagement arm and l=1 the pure proxy arm; engagement-only keys relax back to the base default as l->1 and proxy-only keys rise from the base default as l->0. The five fully-resolved patches are tabulated in the NOTES (docs/scenarios/satisfaction_vs_retention-NOTES.md) and regenerated deterministically by scripts/run_phase21_b.sh.\n\nEXPECTED SIGNATURE: retention_7d and sessions_per_user_per_day highest near l=0 and declining toward l=1; welfare.mean_immediate_satisfaction and session_health.mean_session_utility (U_s) lowest near l=0 and rising toward l=1; arch_comfort share shifting across l. A 'knee' where welfare gains flatten marks the efficient trade-off point.\n\nVERDICT CRITERIA: FRONTIER DEMONSTRATED iff engagement/retention and welfare move in OPPOSITE directions across l (negative rank correlation between retention_7d and mean satisfaction over the 5 arms); report the knee. Otherwise report 'no trade-off observed / co-moving'.\n\nARMS: lambda00, lambda25, lambda50, lambda75, lambda100 -> results/phase21/satisfaction_vs_retention/<arm>."
+}

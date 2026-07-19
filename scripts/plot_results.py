@@ -121,6 +121,34 @@ plot whose required inputs are missing across every run:
                          by day per arm"): mean_trust per simulated day, one
                          line per run, from longterm_metrics.csv. Same input
                          contract as retention_by_day.png.
+  creator_hhi_by_day.png  Phase 21 creator-concentration curve (V2 TDD §4.18,
+                         docs/design/P21-CONTRACTS.md §6): creator_hhi vs.
+                         simulated day, one line per run, from
+                         ecosystem_metrics.csv (contracts §2 frozen header).
+                         Skipped per-run when a run's ecosystem_metrics.csv is
+                         absent (expected unless evaluation.ecosystem_metrics
+                         is on) and skipped entirely if no run has one.
+  archetype_share_by_day_<label>.png  Phase 21 archetype-mix curve (contracts
+                         §6): ONE PNG PER RUN (not overlaid on shared axes,
+                         unlike every other plot in this file) -- all eight
+                         ecosystem_metrics.csv arch_* impression-share columns
+                         (contracts §2 frozen header, catalog index order)
+                         stacked against simulated day for that run alone.
+                         Skipped per-run when that run's ecosystem_metrics.csv
+                         is absent/unusable.
+  entropy_by_day.png     Phase 21 preference-entropy trajectory (contracts
+                         §3): mean_preference_entropy -- longterm_metrics.csv's
+                         TRAILING column -- vs. simulated day, one line per
+                         run. Reuses the same longterm_metrics.csv already
+                         read for retention_by_day.png/trust_trajectory.png;
+                         skipped when that column is absent (a pre-Phase-21
+                         longterm_metrics.csv, or long_term not configured).
+  retention_welfare_frontier.png  Phase 21 headline figure (contracts §6: "the
+                         satisfaction_vs_retention headline figure"): scatter
+                         of x=summary.json long_term.retention_7d vs.
+                         y=welfare.mean_immediate_satisfaction, one labeled
+                         point per run -- the retention-vs-hidden-welfare
+                         frontier. Skipped for any run missing either value.
 
 Exit status: 0 if at least one plot was written, 1 if none were.
 """
@@ -800,6 +828,192 @@ def plot_trust_trajectory(runs: list[Phase20Run], outdir: Path,
     return True
 
 
+# --- Phase 21 ecosystem failure-mode suite (V2 TDD §4.18, docs/design/P21-CONTRACTS.md §6) -----
+#
+# creator_hhi_by_day.png / archetype_share_by_day_<label>.png need ecosystem_metrics.csv, a
+# Phase-21-only file neither RunData nor Phase20Run reads -- a tiny sibling dataclass (Phase21Run),
+# mirroring the Phase 20 section's Phase20Run above, covers it without touching RunData/load_run or
+# Phase20Run/_load_phase20_run at all (this package's brief: append new Phase 21 plot functions, do
+# not alter existing functions/classes). entropy_by_day.png reuses Phase20Run AS-IS (it already
+# reads longterm_metrics.csv in full, including the Phase 21 trailing mean_preference_entropy
+# column, contracts §3) -- called with the SAME phase20_runs list main() already builds for
+# plot_retention_by_day/plot_trust_trajectory. retention_welfare_frontier.png reuses RunData/
+# load_run AS-IS (both fields it needs are already-loaded summary.json content) -- same shape as
+# plot_engagement_vs_welfare above, called with the SAME runs list.
+
+_PHASE21_ARCH_COLUMNS: list = [
+    ("arch_genuinely_satisfying", "genuinely satisfying"),
+    ("arch_useful", "useful"),
+    ("arch_ragebait", "ragebait"),
+    ("arch_clickbait", "clickbait"),
+    ("arch_comfort", "comfort"),
+    ("arch_polished_irrelevant", "polished irrelevant"),
+    ("arch_niche_treasure", "niche treasure"),
+    ("arch_background_music", "background music"),
+]
+
+
+@dataclass
+class Phase21Run:
+    """Minimal per-run loader for Phase 21 plots needing ecosystem_metrics.csv (contracts §2) --
+    deliberately separate from RunData/load_run and from Phase20Run (see the section header comment
+    above)."""
+
+    label: str
+    directory: Path
+    color: tuple
+    ecosystem: Optional[pd.DataFrame]
+
+
+def _load_phase21_run(directory: Path, label: str, color: tuple) -> Phase21Run:
+    ecosystem = _read_csv(directory / "ecosystem_metrics.csv")
+    if ecosystem is None:
+        warn(f"{label}: ecosystem_metrics.csv missing or unreadable (expected unless "
+             f"evaluation.ecosystem_metrics is on, contracts §1, or for any pre-Phase-21 run)")
+    return Phase21Run(label, directory, color, ecosystem)
+
+
+def plot_creator_hhi_by_day(runs: list, outdir: Path,
+                            filename: str = "creator_hhi_by_day.png") -> bool:
+    """Phase 21 creator-concentration curve (V2 TDD §4.18, contracts §6: "plot_creator_hhi_by_day
+    (runs, outdir) (one line per arm from ecosystem_metrics.csv)"): creator_hhi per simulated day,
+    one line per run, from ecosystem_metrics.csv's day/creator_hhi columns (contracts §2 frozen
+    header). Skipped (warn) for any run missing a usable ecosystem_metrics.csv -- the expected state
+    for a gate-off run (evaluation.ecosystem_metrics off, contracts §1) or any pre-Phase-21 run;
+    skipped entirely (no file written) if no run has one.
+    """
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    plotted = 0
+    for run in runs:
+        df = run.ecosystem
+        if df is None or "day" not in df.columns or "creator_hhi" not in df.columns:
+            continue
+        ax.plot(df["day"], df["creator_hhi"], color=run.color, label=run.label)
+        plotted += 1
+    if plotted == 0:
+        plt.close(fig)
+        warn(f"skipping {filename}: no run has a usable ecosystem_metrics.csv with "
+             f"day/creator_hhi columns")
+        return False
+    finish_figure(fig, ax, outdir / filename, "simulated day", "creator HHI",
+                 "Creator Concentration (HHI) by Simulated Day")
+    return True
+
+
+def plot_archetype_share_by_day(runs: list, outdir: Path) -> int:
+    """Phase 21 archetype-mix curve (V2 TDD §4.18, contracts §6: "plot_archetype_share_by_day(runs,
+    outdir) (stacked or multi-line, 8 archetypes)"): ONE PNG PER RUN (unlike every other plot in
+    this file, which overlays runs on shared axes) -- each figure stacks all eight
+    ecosystem_metrics.csv arch_* impression-share columns (contracts §2 frozen header, catalog index
+    order) against simulated day, so one run's archetype mix over time is readable on its own (eight
+    lines per run overlaid across several runs at once would be unreadable). Filenames:
+    `archetype_share_by_day_<label>.png` (label sanitized to a filesystem-safe slug). Returns the
+    COUNT of PNGs written -- matches the Phase 11 benchmark-plot convention below of returning a
+    count rather than a bool, since this is the one plot in the simulation section that can write
+    more than one file per call. Skipped per-run (warn) when that run's ecosystem_metrics.csv is
+    missing or has no arch_* column; a summary warning is also emitted if NO run produced a PNG.
+    """
+    written = 0
+    for run in runs:
+        df = run.ecosystem
+        if df is None or "day" not in df.columns:
+            continue
+        present = [(col, disp) for col, disp in _PHASE21_ARCH_COLUMNS if col in df.columns]
+        if not present:
+            continue
+        fig, ax = plt.subplots(figsize=FIGSIZE)
+        ax.stackplot(
+            df["day"], *[df[col] for col, _disp in present],
+            labels=[disp for _col, disp in present],
+            colors=[COLOR_CYCLE[i % len(COLOR_CYCLE)] for i in range(len(present))],
+            alpha=0.85,
+        )
+        slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in run.label) or "run"
+        filename = f"archetype_share_by_day_{slug}.png"
+        finish_figure(fig, ax, outdir / filename, "simulated day", "impression share",
+                     f"Archetype Mix by Simulated Day -- {run.label}")
+        written += 1
+    if written == 0:
+        warn("skipping archetype_share_by_day: no run has a usable ecosystem_metrics.csv with "
+             "day + at least one arch_* column")
+    return written
+
+
+def plot_entropy_by_day(runs: list, outdir: Path,
+                        filename: str = "entropy_by_day.png") -> bool:
+    """Phase 21 preference-entropy trajectory (V2 TDD §4.18, contracts §6: "plot_entropy_by_day
+    (runs, outdir) (from longterm_metrics.csv's mean_preference_entropy trailing column)"):
+    mean_preference_entropy per simulated day, one line per run, from longterm_metrics.csv's
+    TRAILING column (contracts §3 -- appended last so pre-Phase-21 readers of the existing P20
+    columns keep working). Takes `list[Phase20Run]` -- this file's EXISTING Phase 20 loader/
+    dataclass, called but not modified, since it already reads longterm_metrics.csv in full; call
+    with the SAME phase20_runs list already built for plot_retention_by_day/plot_trust_trajectory.
+    Skipped (warn) for any run missing a usable longterm_metrics.csv, or whose longterm_metrics.csv
+    predates the Phase 21 trailing column.
+    """
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    plotted = 0
+    for run in runs:
+        df = run.longterm
+        if df is None or "day" not in df.columns or "mean_preference_entropy" not in df.columns:
+            continue
+        ax.plot(df["day"], df["mean_preference_entropy"], color=run.color, label=run.label)
+        plotted += 1
+    if plotted == 0:
+        plt.close(fig)
+        warn(f"skipping {filename}: no run has a usable longterm_metrics.csv with "
+             f"day/mean_preference_entropy columns (the latter is a Phase 21 addition, contracts "
+             f"§3 -- absent from a pre-Phase-21 longterm_metrics.csv or a gate-off run)")
+        return False
+    finish_figure(fig, ax, outdir / filename, "simulated day", "mean preference entropy",
+                 "Preference-Diversity Entropy by Simulated Day")
+    return True
+
+
+def plot_retention_welfare_frontier(runs: list, outdir: Path,
+                                    filename: str = "retention_welfare_frontier.png") -> bool:
+    """Phase 21 headline figure (V2 TDD §4.18, contracts §6 -- "the satisfaction_vs_retention
+    headline figure"): scatter of long-term retention vs. hidden welfare, one labeled point per run:
+    x = summary.json's long_term.retention_7d (P20 gate), y = welfare.mean_immediate_satisfaction
+    (P14/15 gate, D18 evaluation carve-out) -- the same two axes scripts/phase21_scenarios.py's
+    satisfaction_vs_retention scenario is designed around (a weight sweep between the
+    engagement-optimized and satisfaction-proxy presets, contracts §7 / plan Phase 21 task 2). Takes
+    `list[RunData]` -- this file's EXISTING loader/dataclass, called but not modified, matching
+    plot_engagement_vs_welfare's shape exactly (both fields are already-loaded summary.json
+    content). Skipped for any run missing either value (e.g. a run with neither P20 gate on, or
+    without realism.latent_reactions).
+    """
+    usable = []
+    for run in runs:
+        if run.summary is None:
+            continue
+        long_term = run.summary.get("long_term")
+        retention = long_term.get("retention_7d") if isinstance(long_term, dict) else None
+        welfare = run.summary.get("welfare")
+        if retention is None or not isinstance(welfare, dict):
+            continue
+        satisfaction = welfare.get("mean_immediate_satisfaction")
+        if satisfaction is None:
+            continue
+        usable.append((run, retention, satisfaction))
+
+    if not usable:
+        warn(f"skipping {filename}: no run has both long_term.retention_7d and "
+             f"welfare.mean_immediate_satisfaction (long_term requires a P20 gate; welfare "
+             f"requires realism.latent_reactions)")
+        return False
+
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    for run, retention, satisfaction in usable:
+        ax.scatter(retention, satisfaction, s=110, zorder=3, color=run.color, label=run.label)
+        ax.annotate(run.label, (retention, satisfaction), textcoords="offset points",
+                    xytext=(8, 4), fontsize=8)
+    ax.margins(0.18)  # headroom so corner point annotations are not clipped
+    finish_figure(fig, ax, outdir / filename, "retention (7d)", "mean hidden satisfaction",
+                 "Retention vs. Hidden-Welfare Frontier")
+    return True
+
+
 # --- Phase 11 benchmark plots (retrieval_metrics.csv / load_metrics.csv) ----------------------
 #
 # Each returns the number of PNGs written (0 => nothing usable, warn-skipped), summed in main().
@@ -1459,6 +1673,19 @@ def main(argv=None) -> int:
     phase20_runs = [_load_phase20_run(d, label, color) for d, label, color in zip(dirs, labels, colors)]
     written += plot_retention_by_day(phase20_runs, outdir)
     written += plot_trust_trajectory(phase20_runs, outdir)
+
+    # Phase 21 additions (V2 TDD §4.18, docs/design/P21-CONTRACTS.md §6). creator_hhi_by_day.png /
+    # archetype_share_by_day_<label>.png need ecosystem_metrics.csv (Phase21Run, a new loader
+    # mirroring Phase20Run above); entropy_by_day.png reuses the EXISTING phase20_runs list
+    # (Phase20Run already reads longterm_metrics.csv in full); retention_welfare_frontier.png
+    # reuses the EXISTING runs list (RunData already reads summary.json). All four warn-skip
+    # cleanly when a plain pre-Phase-21 call has none of this data, exactly like the Phase 20
+    # additions above.
+    phase21_runs = [_load_phase21_run(d, label, color) for d, label, color in zip(dirs, labels, colors)]
+    written += plot_creator_hhi_by_day(phase21_runs, outdir)
+    written += plot_archetype_share_by_day(phase21_runs, outdir)
+    written += plot_entropy_by_day(phase20_runs, outdir)
+    written += plot_retention_welfare_frontier(runs, outdir)
 
     # Phase 11 benchmark plots (retrieval_metrics.csv / load_metrics.csv). Same dirs; a dir may hold
     # simulation CSVs, benchmark CSVs, or (a parent dir) several benchmark subtrees. Each warn-skips.

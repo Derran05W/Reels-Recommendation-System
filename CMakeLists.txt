@@ -45,6 +45,7 @@ add_library(rr_core STATIC
     src/core/embedding.cpp
     src/domain/serialization.cpp
     src/infrastructure/archetype_config.cpp
+    src/infrastructure/cohort_config.cpp
     src/infrastructure/random.cpp
     src/infrastructure/logger.cpp
     src/infrastructure/config.cpp

@@ -15,6 +15,7 @@
 #include "rr/infrastructure/random.hpp"
 #include "rr/recommendation/diversity_reranker.hpp"
 #include "rr/recommendation/orchestrator.hpp"
+#include "rr/recommendation/personalized_diversity_reranker.hpp"
 #include "rr/recommendation/recommender.hpp"
 #include "rr/recommendation/recommender_factory.hpp"
 #include "rr/recommendation/vector_index.hpp"
@@ -87,6 +88,10 @@ class FullRecommender final : public Recommender {
     ExplorationCandidateSource explorationSource_;
     WeightedRanker ranker_;
     DiversityReranker reranker_;
+    // Phase 17: constructed unconditionally (cheap, rng-free); the Orchestrator receives
+    // personalized_ instead of reranker_ only when realism.personalized_diversity is on. The
+    // stub delegate keeps gate-on behaviour equal to fixed until package B lands.
+    PersonalizedDiversityReranker personalizedReranker_;
     Orchestrator orchestrator_;
 };
 

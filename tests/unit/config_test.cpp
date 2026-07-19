@@ -429,6 +429,38 @@ TEST(ConfigTest, SessionDynamicsBlockParsesRoundTripsAndRejectsUnknownKeys) {
     EXPECT_THROW(bad.get<ExperimentConfig>(), std::invalid_argument);
 }
 
+// --- Realism V2 Phase 17: personalized-diversity gate + cohort mix ---------------------------
+
+TEST(ConfigTest, PersonalizedDiversityGateRequiresSessionDynamics) {
+    ExperimentConfig def;
+    EXPECT_FALSE(def.realism.personalizedDiversity);
+    EXPECT_TRUE(def.realism.cohortMix.empty());
+    json ok = {{"realism",
+                {{"content_v2", true},
+                 {"latent_reactions", true},
+                 {"session_dynamics", true},
+                 {"personalized_diversity", true}}}};
+    EXPECT_TRUE(ok.get<ExperimentConfig>().realism.personalizedDiversity);
+    json bad = {
+        {"realism",
+         {{"content_v2", true}, {"latent_reactions", true}, {"personalized_diversity", true}}}};
+    EXPECT_THROW(bad.get<ExperimentConfig>(), std::invalid_argument);
+}
+
+TEST(ConfigTest, CohortMixAndPersonalizedDiversityParamsParse) {
+    json j = {{"realism", {{"cohort_mix", json::array({{{"name", "focused"}, {"weight", 2.0}}})}}},
+              {"diversity", {{"personalized_cap_scale_max", 3.0}}}};
+    auto c = j.get<ExperimentConfig>();
+    ASSERT_EQ(c.realism.cohortMix.size(), 1u);
+    EXPECT_EQ(c.realism.cohortMix[0].name, "focused");
+    EXPECT_DOUBLE_EQ(c.diversity.personalizedCapScaleMax, 3.0);
+    EXPECT_DOUBLE_EQ(c.diversity.personalizedLambdaMin, 0.60);
+    json out = c;
+    EXPECT_EQ(out.get<ExperimentConfig>(), c);
+    json bad = {{"realism", {{"cohort_mix", json::array({{{"name", ""}, {"weight", 1.0}}})}}}};
+    EXPECT_THROW(bad.get<ExperimentConfig>(), std::invalid_argument);
+}
+
 TEST(ConfigTest, BehaviourV2BlockParsesRoundTripsAndRejectsUnknownKeys) {
     ExperimentConfig def;
     EXPECT_DOUBLE_EQ(def.behaviourV2.topicWeight, 1.5);

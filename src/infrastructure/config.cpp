@@ -231,17 +231,27 @@ void to_json(json &j, const DiversityConfig &c) {
              {"max_per_creator", c.maxPerCreator},
              {"max_per_topic", c.maxPerTopic},
              {"mmr_lambda", c.mmrLambda},
-             {"use_mmr", c.useMmr}};
+             {"use_mmr", c.useMmr},
+             {"personalized_cap_scale_min", c.personalizedCapScaleMin},
+             {"personalized_cap_scale_max", c.personalizedCapScaleMax},
+             {"personalized_lambda_min", c.personalizedLambdaMin},
+             {"personalized_lambda_max", c.personalizedLambdaMax}};
 }
 
 void from_json(const json &j, DiversityConfig &c) {
     ensureKnownKeys(j, "diversity",
-                    {"enabled", "max_per_creator", "max_per_topic", "mmr_lambda", "use_mmr"});
+                    {"enabled", "max_per_creator", "max_per_topic", "mmr_lambda", "use_mmr",
+                     "personalized_cap_scale_min", "personalized_cap_scale_max",
+                     "personalized_lambda_min", "personalized_lambda_max"});
     readKey(j, "enabled", c.enabled);
     readKey(j, "max_per_creator", c.maxPerCreator);
     readKey(j, "max_per_topic", c.maxPerTopic);
     readKey(j, "mmr_lambda", c.mmrLambda);
     readKey(j, "use_mmr", c.useMmr);
+    readKey(j, "personalized_cap_scale_min", c.personalizedCapScaleMin);
+    readKey(j, "personalized_cap_scale_max", c.personalizedCapScaleMax);
+    readKey(j, "personalized_lambda_min", c.personalizedLambdaMin);
+    readKey(j, "personalized_lambda_max", c.personalizedLambdaMax);
 }
 
 void to_json(json &j, const DriftTopicWeight &c) {
@@ -398,17 +408,21 @@ void to_json(json &j, const RealismConfig &c) {
     j = json{{"content_v2", c.contentV2},
              {"latent_reactions", c.latentReactions},
              {"session_dynamics", c.sessionDynamics},
+             {"personalized_diversity", c.personalizedDiversity},
              {"languages", c.languages},
-             {"archetypes", c.archetypes}};
+             {"archetypes", c.archetypes},
+             {"cohort_mix", c.cohortMix}};
 }
 
 void from_json(const json &j, RealismConfig &c) {
-    ensureKnownKeys(
-        j, "realism",
-        {"content_v2", "latent_reactions", "session_dynamics", "languages", "archetypes"});
+    ensureKnownKeys(j, "realism",
+                    {"content_v2", "latent_reactions", "session_dynamics", "personalized_diversity",
+                     "languages", "archetypes", "cohort_mix"});
     readKey(j, "content_v2", c.contentV2);
     readKey(j, "latent_reactions", c.latentReactions);
     readKey(j, "session_dynamics", c.sessionDynamics);
+    readKey(j, "personalized_diversity", c.personalizedDiversity);
+    readKey(j, "cohort_mix", c.cohortMix);
     readKey(j, "languages", c.languages);
     readKey(j, "archetypes", c.archetypes);
     if (c.languages == 0) {
@@ -424,6 +438,10 @@ void from_json(const json &j, RealismConfig &c) {
     }
     if (c.sessionDynamics && !c.latentReactions) {
         throw std::invalid_argument("realism.session_dynamics requires realism.latent_reactions");
+    }
+    if (c.personalizedDiversity && !c.sessionDynamics) {
+        throw std::invalid_argument(
+            "realism.personalized_diversity requires realism.session_dynamics");
     }
 }
 

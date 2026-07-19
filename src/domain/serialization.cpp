@@ -120,6 +120,16 @@ void to_json(nlohmann::json &j, const User &u) {
         {"estimated_visual_preference", u.estimatedVisualPreference},
         {"estimated_music_preference", u.estimatedMusicPreference},
         {"estimated_emotional_preference", u.estimatedEmotionalPreference},
+        // Phase 17 recommender-visible tolerance estimates (V2 TDD 4.10/5). Maintained by
+        // ToleranceEstimator from OBSERVABLE signals only; neutral defaults under gate-off.
+        // Estimates, never hidden truth (D11/D18), and consciously allowlisted in the SAME commit
+        // (tests/unit/leak_audit_test.cpp). The two fatigue maps are emitted as COUNTS (like
+        // seen_reels / creator_affinity): the audit cares about which observable KEYS exist, not
+        // their contents.
+        {"estimated_repetition_tolerance", u.estimatedRepetitionTolerance},
+        {"estimated_novelty_tolerance", u.estimatedNoveltyTolerance},
+        {"estimated_topic_fatigue", u.estimatedTopicFatigue.size()},
+        {"estimated_creator_fatigue", u.estimatedCreatorFatigue.size()},
         {"seen_reels", u.seenReels.size()},
         {"creator_affinity", u.creatorAffinity.size()},
         {"recent_interactions", u.recentInteractions.size()},

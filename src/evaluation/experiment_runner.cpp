@@ -26,6 +26,7 @@
 #include "rr/infrastructure/clock.hpp"
 #include "rr/infrastructure/random.hpp"
 #include "rr/learning/online_user_state_updater.hpp"
+#include "rr/learning/tolerance_estimator.hpp"
 #include "rr/recommendation/effective_preference.hpp"
 #include "rr/recommendation/recommender.hpp"
 #include "rr/recommendation/recommender_factory.hpp"
@@ -87,6 +88,10 @@ ExperimentResult ExperimentRunner::run() {
     // invoking it is stream-neutral (D8) - the recommender/behaviour/oracle streams are untouched.
     // When config.learning.enabled is false the updater is never invoked and estimates stay frozen.
     const OnlineUserStateUpdater updater(ds.reels, config_.learning, config_.realism.contentV2);
+    // Phase 17: observables-only tolerance estimation, invoked after each step under the
+    // personalized-diversity gate (rng/clock-free — stream-neutral, D8).
+    const ToleranceEstimator toleranceEstimator(ds.reels, config_.diversity);
+    const bool personalizedDiversity = config_.realism.personalizedDiversity;
     const bool learningEnabled = config_.learning.enabled;
 
     // Scheduled hidden-preference drift (Phase 10, TDD 11.4). Constructed ONCE over the generated
@@ -496,6 +501,9 @@ ExperimentResult ExperimentRunner::run() {
                 // frozen arm keeps the cold-start estimates. Stream-neutral (no rng/clock).
                 if (learningEnabled) {
                     updater.apply(user, reel, step.event);
+                }
+                if (personalizedDiversity) {
+                    toleranceEstimator.apply(user, reel, step.event);
                 }
 
                 ImpressionSample s;

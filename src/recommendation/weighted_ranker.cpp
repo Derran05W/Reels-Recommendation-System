@@ -9,8 +9,9 @@
 namespace rr {
 
 WeightedRanker::WeightedRanker(const std::vector<Reel> &reels, const RankingConfig &config,
-                               bool contentV2)
-    : config_(config), extractor_(reels, config, contentV2), contentV2_(contentV2) {}
+                               bool contentV2, bool personalizedDiversity)
+    : config_(config), extractor_(reels, config, contentV2), contentV2_(contentV2),
+      personalizedDiversity_(personalizedDiversity) {}
 
 std::vector<Candidate> WeightedRanker::rank(const User &user,
                                             const std::vector<Candidate> &candidates,
@@ -40,8 +41,24 @@ std::vector<Candidate> WeightedRanker::rank(const User &user,
         const float exploration = static_cast<float>(config_.explorationWeight * f.exploration);
         const float durationMatch =
             static_cast<float>(config_.durationMatchWeight * f.durationMatch);
-        const float repetitionPenalty =
-            static_cast<float>(-config_.repetitionPenalty * f.repetition);
+        // repetition_penalty (TDD 14.2). Phase 17 (personalizedDiversity gate): scale the
+        // contribution per-user by 2*(1 - estimatedRepetitionTolerance) — neutral 0.5 => ×1.0
+        // (byte-identical). INTEGRATION CALIBRATION: the multiplier is bounded [0.6, 1.4] rather
+        // than the raw [0, 2] — at medium scale the unbounded doubling for intolerant users
+        // stacked with the reranker's tighter caps (a DOUBLE intervention) and the relevance
+        // cost compounded through online learning into a net U_s LOSS for the easily-fatigued
+        // cohort; gentler ranking-side scaling keeps the reranker's caps as the primary
+        // personalization lever. Gate-off takes the EXACT pre-Phase-17 expression (no ×1.0
+        // multiply) so the D17 golden is bit-for-bit unchanged.
+        float repetitionPenalty;
+        if (personalizedDiversity_) {
+            const double repScale = std::clamp(
+                2.0 * (1.0 - static_cast<double>(user.estimatedRepetitionTolerance)), 0.6, 1.4);
+            repetitionPenalty =
+                static_cast<float>(-config_.repetitionPenalty * f.repetition * repScale);
+        } else {
+            repetitionPenalty = static_cast<float>(-config_.repetitionPenalty * f.repetition);
+        }
         const float impressionPenalty =
             static_cast<float>(-config_.impressionPenaltyWeight * f.impressionCount);
 

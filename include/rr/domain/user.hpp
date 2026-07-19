@@ -31,6 +31,18 @@ struct User {
     Embedding estimatedMusicPreference{};
     Embedding estimatedEmotionalPreference{};
 
+    // --- Phase 17 recommender-visible tolerance estimates (V2 TDD 4.10/5) --------------------
+    // Maintained by ToleranceEstimator from OBSERVABLE signals only (declining within-topic
+    // completion runs, not-interested after repeats, exit-after-repetition, comment/save
+    // cadence) and only under realism.personalized_diversity; gate-off leaves the neutral
+    // defaults (D17). Consumed by PersonalizedDiversityReranker (per-user caps / MMR lambda /
+    // repetition scaling). Estimates, never hidden truth (D11/D18); serialization allowlist
+    // covers them explicitly.
+    float estimatedRepetitionTolerance = 0.5F; // 0.5 = neutral (no evidence yet)
+    float estimatedNoveltyTolerance = 0.5F;
+    std::unordered_map<TopicId, float> estimatedTopicFatigue{};
+    std::unordered_map<CreatorId, float> estimatedCreatorFatigue{};
+
     std::unordered_set<ReelId> seenReels;
     std::unordered_map<CreatorId, float> creatorAffinity;
 

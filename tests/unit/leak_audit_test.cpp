@@ -76,6 +76,17 @@ const std::set<std::string> kUserAllowlist = {
     "estimated_visual_preference",
     "estimated_music_preference",
     "estimated_emotional_preference",
+    // Phase 17 recommender-visible tolerance estimates (V2 TDD 4.10/5) — consciously allowlisted as
+    // observables: the ToleranceEstimator maintains these from OBSERVABLE signals only (declining
+    // within-topic completion runs, not-interested after repeats, exit-after-repetition, comment/
+    // save cadence). Estimates, never hidden truth (D11/D18); they drive the personalized diversity
+    // caps / MMR lambda / repetition-penalty scaling. The two fatigue maps are emitted as COUNTS.
+    // None is a latent value (the hidden repetitionTolerance/noveltyTolerance traits stay in
+    // HiddenUserState, unreachable from here).
+    "estimated_repetition_tolerance",
+    "estimated_novelty_tolerance",
+    "estimated_topic_fatigue",
+    "estimated_creator_fatigue",
     "seen_reels",
     "creator_affinity",
     "recent_interactions",
@@ -154,6 +165,12 @@ User fullyPopulatedUser() {
     u.estimatedVisualPreference = {0.11F, 0.22F, 0.33F};
     u.estimatedMusicPreference = {0.44F, 0.55F, 0.66F};
     u.estimatedEmotionalPreference = {0.77F, 0.88F, 0.99F};
+    // Phase 17 tolerance estimates at concrete non-default values so the *_tolerance / *_fatigue
+    // keys are exercised (counts > 0 for the maps) and a failing schema dump is meaningful.
+    u.estimatedRepetitionTolerance = 0.72F;
+    u.estimatedNoveltyTolerance = 0.31F;
+    u.estimatedTopicFatigue = {{TopicId{4}, 0.6F}, {TopicId{5}, 0.2F}};
+    u.estimatedCreatorFatigue = {{CreatorId{1}, 0.4F}};
     u.seenReels = {ReelId{1}, ReelId{2}, ReelId{3}};
     u.creatorAffinity = {{CreatorId{1}, 0.5F}, {CreatorId{2}, 0.25F}};
     u.recentInteractions = {fullyPopulatedEvent(), fullyPopulatedEvent()};

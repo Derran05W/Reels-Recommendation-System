@@ -42,12 +42,17 @@ FullRecommender::FullRecommender(const RecommenderDeps &deps, Rng rng)
       explorationSource_(reels_, deps.config.exploration.epsilon,
                          deps.config.recommendation.explorationCandidates,
                          deps.config.exploration.freshWindowSeconds, &rng_),
-      ranker_(reels_, deps.config.ranking, deps.config.realism.contentV2),
+      ranker_(reels_, deps.config.ranking, deps.config.realism.contentV2,
+              deps.config.realism.personalizedDiversity),
       reranker_(reels_, deps.config.diversity),
+      personalizedReranker_(reels_, deps.config.diversity),
       orchestrator_(makeSourceList(hnswSource_, popularSource_, trendingSource_, freshSource_,
                                    creatorSource_, explorationSource_, explorationEnabled_),
                     reels_, &ranker_, explorationEnabled_ ? &explorationSource_ : nullptr,
-                    explorationEnabled_ ? deps.config.exploration.guaranteedSlots : 0, &reranker_) {
+                    explorationEnabled_ ? deps.config.exploration.guaranteedSlots : 0,
+                    deps.config.realism.personalizedDiversity
+                        ? static_cast<Reranker *>(&personalizedReranker_)
+                        : static_cast<Reranker *>(&reranker_)) {
     // Build the graph once over all active reels; embeddings are immutable (D2). Mirrors the
     // other HNSW recommenders exactly.
     for (const Reel &reel : reels_) {

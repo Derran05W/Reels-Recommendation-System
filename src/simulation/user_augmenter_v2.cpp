@@ -79,6 +79,32 @@ LanguageId sampleLanguage(const std::vector<double> &cumulative, Rng &rng) {
     return LanguageId{static_cast<uint32_t>(cumulative.size() - 1)};
 }
 
+// Draw one [0, 1] trait: the cohort's override range when the (optional) cohort PINS this trait,
+// else the userTraitsV2 default range. Exactly one uniform() draw either way, so a cohort choice
+// NEVER changes the per-user draw count — only the range (the same-count-within-a-mix contract).
+// A null / absent override reproduces the pre-Phase-17 call `uniform(defLo, defHi)` byte-for-byte.
+float drawTrait(Rng &rng, const TraitOverride *ov, double defLo, double defHi) {
+    if (ov != nullptr && ov->present) {
+        return static_cast<float>(rng.uniform(ov->lo, ov->hi));
+    }
+    return static_cast<float>(rng.uniform(defLo, defHi));
+}
+
+// Select a cohort by weight: one uniform01 scaled by the total, bucketed through the cumulative
+// (un-normalized) weights; the last index is the catch-all for the floating-point tail. Mirrors
+// sampleLanguage. One draw per user, taken BEFORE the modality draws so the trait draws that follow
+// can consult the chosen cohort.
+const TraitCohortSpec &selectCohort(const std::vector<TraitCohortSpec> &mix,
+                                    const std::vector<double> &cumulative, double total, Rng &rng) {
+    const double target = rng.uniform01() * total;
+    for (std::size_t i = 0; i < cumulative.size(); ++i) {
+        if (target < cumulative[i]) {
+            return mix[i];
+        }
+    }
+    return mix.back();
+}
+
 } // namespace
 
 void augmentUsersV2(std::vector<HiddenUserState> &hiddenStates, const ModalitySpaces &spaces,
@@ -93,12 +119,37 @@ void augmentUsersV2(std::vector<HiddenUserState> &hiddenStates, const ModalitySp
         langCumulative[i] += langCumulative[i - 1];
     }
 
+    // Phase 17 trait cohorts (plan task 1): when realism.cohortMix is NON-EMPTY, each user first
+    // draws a named cohort by weight (one uniform01 on usersV2Rng, taken BELOW before the modality
+    // draws), then samples the four overridable tolerance/appetite traits from the chosen cohort's
+    // [lo, hi] range instead of the default userTraitsV2 range. The EMPTY mix (the default) skips
+    // the whole cohort path => ZERO extra draws => byte-identical to Phase 13-16 output (D17,
+    // property-tested at >= 20 seeds). Cumulative weights precomputed once (from_json guarantees
+    // every weight > 0, so cohortTotal > 0 whenever the mix is non-empty).
+    const bool useCohorts = !realism.cohortMix.empty();
+    std::vector<double> cohortCumulative;
+    double cohortTotal = 0.0;
+    if (useCohorts) {
+        cohortCumulative.reserve(realism.cohortMix.size());
+        for (const TraitCohortSpec &c : realism.cohortMix) {
+            cohortTotal += c.weight;
+            cohortCumulative.push_back(cohortTotal);
+        }
+    }
+
     // Per user, in user (index) order, a FIXED documented draw order on usersV2Rng; determinism
     // depends only on this order. The V1 HiddenUserState fields (userId, hiddenPreference,
     // preferredTopics, the seven V1 traits) are produced by the untouched V1 generateUsers path and
     // are NOT written here (D17: gate-on leaves every V1 field byte-identical). Only the V2
     // channels and traits below are set, and only from this "users-v2" stream (D19).
     for (HiddenUserState &h : hiddenStates) {
+        // Cohort selection FIRST (only under a non-empty mix; see above): one uniform01 draw whose
+        // result steers the four overridable trait draws below. nullptr under the empty-mix
+        // default, in which case every drawTrait call falls back to the default userTraitsV2 range.
+        const TraitCohortSpec *cohort =
+            useCohorts ? &selectCohort(realism.cohortMix, cohortCumulative, cohortTotal, usersV2Rng)
+                       : nullptr;
+
         // (a) Per-modality preference embeddings, pinned order visual -> music -> emotional, each
         //     blending the corresponding shared ModalitySpaces centres.
         h.visualPreference = sampleModalityPreference(spaces.visualCentres, dim, usersV2Rng);
@@ -112,8 +163,9 @@ void augmentUsersV2(std::vector<HiddenUserState> &hiddenStates, const ModalitySp
             userTraitsV2::kHumourPreferenceLo, userTraitsV2::kHumourPreferenceHi));
         h.controversyTolerance = static_cast<float>(usersV2Rng.uniform(
             userTraitsV2::kControversyToleranceLo, userTraitsV2::kControversyToleranceHi));
-        h.noveltySeeking = static_cast<float>(
-            usersV2Rng.uniform(userTraitsV2::kNoveltySeekingLo, userTraitsV2::kNoveltySeekingHi));
+        h.noveltySeeking =
+            drawTrait(usersV2Rng, cohort ? &cohort->noveltySeeking : nullptr,
+                      userTraitsV2::kNoveltySeekingLo, userTraitsV2::kNoveltySeekingHi);
         h.clickbaitSusceptibility = static_cast<float>(usersV2Rng.uniform(
             userTraitsV2::kClickbaitSusceptibilityLo, userTraitsV2::kClickbaitSusceptibilityHi));
         h.informationTolerance = static_cast<float>(usersV2Rng.uniform(
@@ -126,13 +178,18 @@ void augmentUsersV2(std::vector<HiddenUserState> &hiddenStates, const ModalitySp
             static_cast<float>(usersV2Rng.uniform(userTraitsV2::kLanguageMismatchToleranceLo,
                                                   userTraitsV2::kLanguageMismatchToleranceHi));
 
-        // (d) Forward traits (generated now, consumed by the named later phase).
-        h.repetitionTolerance = static_cast<float>(usersV2Rng.uniform(
-            userTraitsV2::kRepetitionToleranceLo, userTraitsV2::kRepetitionToleranceHi));
-        h.noveltyTolerance = static_cast<float>(usersV2Rng.uniform(
-            userTraitsV2::kNoveltyToleranceLo, userTraitsV2::kNoveltyToleranceHi));
-        h.creatorLoyalty = static_cast<float>(
-            usersV2Rng.uniform(userTraitsV2::kCreatorLoyaltyLo, userTraitsV2::kCreatorLoyaltyHi));
+        // (d) Forward traits (generated now, consumed by the named later phase). The three
+        //     tolerance/loyalty traits are cohort-overridable (drawTrait); habit/trust/usage/
+        //     plasticity are not cohort levers this phase, so they keep their default ranges.
+        h.repetitionTolerance =
+            drawTrait(usersV2Rng, cohort ? &cohort->repetitionTolerance : nullptr,
+                      userTraitsV2::kRepetitionToleranceLo, userTraitsV2::kRepetitionToleranceHi);
+        h.noveltyTolerance =
+            drawTrait(usersV2Rng, cohort ? &cohort->noveltyTolerance : nullptr,
+                      userTraitsV2::kNoveltyToleranceLo, userTraitsV2::kNoveltyToleranceHi);
+        h.creatorLoyalty =
+            drawTrait(usersV2Rng, cohort ? &cohort->creatorLoyalty : nullptr,
+                      userTraitsV2::kCreatorLoyaltyLo, userTraitsV2::kCreatorLoyaltyHi);
         h.habitStrength = static_cast<float>(
             usersV2Rng.uniform(userTraitsV2::kHabitStrengthLo, userTraitsV2::kHabitStrengthHi));
         h.platformTrust = static_cast<float>(

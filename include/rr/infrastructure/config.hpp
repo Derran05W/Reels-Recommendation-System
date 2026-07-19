@@ -7,6 +7,7 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include "rr/infrastructure/archetype_config.hpp"
+#include "rr/infrastructure/cohort_config.hpp"
 
 namespace rr {
 
@@ -183,6 +184,18 @@ struct DiversityConfig {
     // addition to the TDD 21 example, mandated by the phase-9 experiment arms (hnsw_ranker vs
     // +constraints vs +constraints+MMR).
     bool useMmr = true;
+    // Phase 17 personalized-diversity scaling surface (V2 TDD 4.10; consumed only under
+    // realism.personalized_diversity): per-user effective caps scale within
+    // [cap * personalizedCapScaleMin, cap * personalizedCapScaleMax] as a function of the
+    // ESTIMATED tolerances, and the per-user MMR lambda interpolates
+    // [personalizedLambdaMin, personalizedLambdaMax]. Package B documents the interpolation at
+    // its definition.
+    // 0.7 (integration-calibrated from 0.5): the tighter floor over-truncated intolerant users'
+    // topic caps at medium scale — see the weighted_ranker.cpp calibration note.
+    double personalizedCapScaleMin = 0.7;
+    double personalizedCapScaleMax = 2.0;
+    double personalizedLambdaMin = 0.60;
+    double personalizedLambdaMax = 0.90;
     bool operator==(const DiversityConfig &) const = default;
 };
 
@@ -240,12 +253,22 @@ struct RealismConfig {
     // feed quality (V2 TDD 4.6-4.9). REQUIRES latent_reactions (throws at config load
     // otherwise).
     bool sessionDynamics = false;
+    // Phase 17 gate: the observables-only ToleranceEstimator + PersonalizedDiversityReranker
+    // (per-user caps/lambda/repetition scaling from ESTIMATED tolerances). REQUIRES
+    // session_dynamics (the estimator reads exit-after-repetition signals; throws at load
+    // otherwise). The fixed-diversity path is untouched (D17).
+    bool personalizedDiversity = false;
     // Size of the global language set (V2 TDD 4.1); language ids are 0..languages-1 with the
     // skewed distribution rr::languageWeights. Must be >= 1.
     uint32_t languages = 8;
     // Config-driven archetype catalog (V2 TDD 4.4, D24): defaults to the eight TDD archetypes;
     // configs may replace it wholesale. Must be non-empty.
     std::vector<ArchetypeSpec> archetypes = defaultArchetypeCatalog();
+    // Phase 17 trait-cohort mixture (plan task 1): EMPTY (the default) keeps Phase 13's
+    // continuous uniform trait sampling byte-identical; non-empty pins/mixes the population
+    // across named tolerance-trait profiles (focused / novelty-seeker / creator-loyal /
+    // easily-fatigued) for the fixed-vs-personalized experiments.
+    std::vector<TraitCohortSpec> cohortMix{};
     bool operator==(const RealismConfig &) const = default;
 };
 

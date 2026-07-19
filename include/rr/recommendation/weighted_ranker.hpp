@@ -36,13 +36,25 @@ namespace rr {
 //
 // The map's values sum to rankingScore to float tolerance (property-tested), whichever key set is
 // present.
+//
+// Phase 17 (personalizedDiversity gate): when enabled, the repetition-penalty CONTRIBUTION is
+// scaled per-user by 2*(1 - user.estimatedRepetitionTolerance) — a repetition-tolerant user
+// (estimate -> 1) sees NO repetition penalty, an intolerant user (-> 0) a DOUBLED one, and a
+// NEUTRAL user (0.5) exactly the fixed ×1.0, so the neutral/gate-off score is byte-identical to
+// the pre-Phase-17 ranker (D17). Only the repetition term changes; every other contribution and
+// the map's sum-to-score invariant are untouched.
 class WeightedRanker final : public Ranker {
   public:
     // `contentV2` (Phase 15): forwarded to the FeatureExtractor; when true, package B1's V2
     // feature contributions are emitted (gated keys), when false (default) output is
     // byte-identical to the pre-Phase-15 ranker (D17).
+    // `personalizedDiversity` (Phase 17, defaulted false to keep every existing call site
+    // byte-identical): gates the per-user repetition-penalty scaling above. INTEGRATOR TODO — the
+    // three ranked recommenders (FullRecommender, HnswRankerRecommender,
+    // HnswExplorationRecommender) pass `deps.config.realism.personalizedDiversity` here to activate
+    // it under the gate.
     WeightedRanker(const std::vector<Reel> &reels, const RankingConfig &config,
-                   bool contentV2 = false);
+                   bool contentV2 = false, bool personalizedDiversity = false);
 
     std::vector<Candidate> rank(const User &user, const std::vector<Candidate> &candidates,
                                 Timestamp now) const override;
@@ -53,6 +65,9 @@ class WeightedRanker final : public Ranker {
     // Phase 15: gates the ten V2 contribution keys in rank(); false keeps the map byte-identical to
     // the pre-Phase-15 ranker (D17). Also forwarded to the FeatureExtractor at construction.
     bool contentV2_ = false;
+    // Phase 17: gates the per-user repetition-penalty scaling in rank(); false keeps the repetition
+    // term (and the whole map) byte-identical to the pre-Phase-17 ranker (D17).
+    bool personalizedDiversity_ = false;
 };
 
 } // namespace rr

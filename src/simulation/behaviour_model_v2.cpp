@@ -131,12 +131,24 @@ constexpr double kImpressionMaxRatio = 0.02;
 
 // --- Phase 16 fatigue modulation shape constants (V2 TDD 4.7) ----------------------------------
 // The alpha/beta/gamma repetition/creator/novelty coefficients live on SessionDynamicsConfig
-// (tuning surface). These two are the flat drags no experiment varies (D24): general scrolling
-// fatigue hits everyone regardless of repetition tolerance, and sustained high-arousal exposure +
-// boredom sap emotionalValue. Documented at fatigueSatisfactionDelta / fatigueEmotionalDelta.
-constexpr double kGeneralFatigueSatWeight = 0.5; // generalFatigue drag on immediateSatisfaction
-constexpr double kEmoFatigueEmoWeight = 0.6;     // emotionalIntensityFatigue drag on emotionalValue
-constexpr double kBoredomEmoWeight = 0.4;        // boredom drag on emotionalValue
+// (tuning surface). The constants below are the fatigue-drag shapes no experiment varies (D24).
+// kGeneralFatigueSatWeight is the base general-scrolling-fatigue drag on satisfaction; the
+// emotional drags (arousal-fatigue + boredom) sap emotionalValue. Documented at
+// fatigueSatisfactionDelta / fatigueEmotionalDelta.
+constexpr double kGeneralFatigueSatWeight =
+    0.5;                                     // base generalFatigue drag on immediateSatisfaction
+constexpr double kEmoFatigueEmoWeight = 0.6; // emotionalIntensityFatigue drag on emotionalValue
+constexpr double kBoredomEmoWeight = 0.4;    // boredom drag on emotionalValue
+// Phase 17 heterogeneity wiring (plan task 3): the general-fatigue satisfaction drag is scaled per
+// user by (kGeneralFatigueNoveltyBase - noveltyTolerance), floored at 0. noveltyTolerance == 0.5 —
+// the population mean under default continuous sampling — gives factor 1.0, so the population-mean
+// drag is byte-unchanged from Phase 16; noveltyTolerance -> 0 (the easily_fatigued cohort) gives a
+// 1.5x drag, noveltyTolerance -> 1 (novelty_seeker) gives 0.5x. This is the documented trait
+// linkage that (a) gives noveltyTolerance real behavioural meaning distinct from noveltySeeking
+// (which only drives the base-utility novelty bonus, latent_model.cpp), and (b) makes
+// easily_fatigued the fastest-declining cohort on a repetitive feed — its low noveltyTolerance
+// (fast general fatigue) STACKS with its low repetitionTolerance (fast repetition fatigue).
+constexpr double kGeneralFatigueNoveltyBase = 1.5;
 
 // Lookup into a const fatigue map with a 0 default (operator[] would insert on a const map).
 float fatigueOf(const std::unordered_map<TopicId, float> &m, TopicId k) {
@@ -221,15 +233,22 @@ void BehaviourModelV2::configureSessionDynamics(const SessionDynamicsConfig &con
 
 // Fatigue drag on immediateSatisfaction (the plan formula; see the header). alpha covers ALL
 // repetition channels (topic + duration-format + music-repetition), modulated DOWN by the user's
-// repetitionTolerance; beta covers same-creator fatigue, modulated down by creatorLoyalty; a flat
-// generalFatigue drag; the novelty term ADDS utility when a novelty-hungry user meets novel
-// content. All tolerance factors clamped to [0,1] (traits are sampled in [0,1], userTraitsV2).
+// repetitionTolerance; beta covers same-creator fatigue, modulated down by creatorLoyalty; the
+// general-scrolling-fatigue drag is modulated by noveltyTolerance (Phase 17 heterogeneity wiring,
+// kGeneralFatigueNoveltyBase above — low-novelty-appetite users wear down faster); the novelty term
+// ADDS utility when a novelty-hungry user meets novel content. All tolerance factors clamped to
+// [0,1] (traits are sampled in [0,1], userTraitsV2).
 double fatigueSatisfactionDelta(const SessionDynamicsConfig &cfg, const HiddenUserState &hidden,
                                 const Reel &reel, const HiddenSessionState &session) {
     const double repFactor = clamp01(1.0 - static_cast<double>(hidden.repetitionTolerance));
     const double loyalFactor = clamp01(1.0 - static_cast<double>(hidden.creatorLoyalty));
     const double alphaEff = cfg.topicFatigueWeight * repFactor;
     const double betaEff = cfg.creatorFatigueWeight * loyalFactor;
+    // General-fatigue drag scaled per user by noveltyTolerance: base 1.5 - noveltyTolerance,
+    // floored at 0 (always in [0.5, 1.5] for a [0,1] trait; the floor is defensive). Factor 1.0 at
+    // the population mean 0.5 => byte-unchanged mean vs Phase 16.
+    const double generalFatigueFactor = std::max(
+        0.0, kGeneralFatigueNoveltyBase - clamp01(static_cast<double>(hidden.noveltyTolerance)));
     const double repetitionFatigue =
         static_cast<double>(fatigueOf(session.topicFatigue, reel.primaryTopic)) +
         static_cast<double>(session.formatFatigue) +
@@ -239,7 +258,8 @@ double fatigueSatisfactionDelta(const SessionDynamicsConfig &cfg, const HiddenUs
     const double noveltyMatch =
         static_cast<double>(session.noveltyNeed) * clamp01(static_cast<double>(reel.novelty));
     return -alphaEff * repetitionFatigue - betaEff * creatorFatigue -
-           kGeneralFatigueSatWeight * static_cast<double>(session.generalFatigue) +
+           kGeneralFatigueSatWeight * generalFatigueFactor *
+               static_cast<double>(session.generalFatigue) +
            cfg.noveltyMatchWeight * noveltyMatch;
 }
 

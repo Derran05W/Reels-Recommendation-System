@@ -7,10 +7,12 @@
 #include <cstdint>
 #include <ctime>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -39,6 +41,8 @@
 #include "rr/simulation/dataset_generator.hpp"
 #include "rr/simulation/drift_scheduler.hpp"
 #include "rr/simulation/event_queue.hpp"
+#include "rr/simulation/preference_evolution.hpp"
+#include "rr/simulation/retention_model.hpp"
 #include "rr/simulation/simulator.hpp"
 
 namespace rr {
@@ -56,6 +60,69 @@ constexpr Timestamp kSecondsPerSimulatedDay = 86400;
 // later). Named constants at their definition per D24.
 constexpr Timestamp kMinReturnDelaySeconds = 60;
 constexpr double kMinBaselineUsage = 0.25;
+
+// Phase 20 long-term interest-diversity constant (V2 §4.17/§6, D22, named per D24). The
+// interest-diversity metric is the entropy of a softmax over a user's cosine similarities to the
+// topic CENTRES; the temperature sets how sharply similarity concentrates the distribution (lower
+// => peakier => lower entropy). A modelling scale, not a swept knob.
+constexpr double kEntropySoftmaxTemperature = 0.25;
+
+// Cosine similarity guarded against zero-norm / mismatched vectors (0 then — no measurable
+// movement). The hidden preference channels are L2-normalized in practice, so this is their dot
+// product; the explicit normalization guards numeric drift.
+double cosineSim(const Embedding &a, const Embedding &b) {
+    if (a.size() != b.size() || a.empty()) {
+        return 0.0;
+    }
+    double na = 0.0;
+    double nb = 0.0;
+    double ab = 0.0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        na += static_cast<double>(a[i]) * static_cast<double>(a[i]);
+        nb += static_cast<double>(b[i]) * static_cast<double>(b[i]);
+        ab += static_cast<double>(a[i]) * static_cast<double>(b[i]);
+    }
+    if (na <= 0.0 || nb <= 0.0) {
+        return 0.0;
+    }
+    // Clamp to [-1,1]: float->double renormalization can push cos a hair past 1 for (bit-)identical
+    // vectors, which would make 1-cos a tiny NEGATIVE shift (printing "-0.000000"). Clamping makes
+    // an unmoved channel's shift exactly +0.
+    return std::clamp(ab / (std::sqrt(na) * std::sqrt(nb)), -1.0, 1.0);
+}
+
+// Shannon entropy (nats) of the softmax over a user's cosine similarities to the topic centres —
+// the long-term interest-diversity measure (LongTermReport::meanFinalPreferenceEntropy).
+// Numerically- stable softmax (max-subtracted); 0 for an empty topic set.
+double preferenceEntropy(const Embedding &pref, const std::vector<Topic> &topics) {
+    if (topics.empty()) {
+        return 0.0;
+    }
+    std::vector<double> weights;
+    weights.reserve(topics.size());
+    double maxLogit = -std::numeric_limits<double>::infinity();
+    for (const Topic &t : topics) {
+        const double logit = cosineSim(pref, t.centre) / kEntropySoftmaxTemperature;
+        weights.push_back(logit);
+        maxLogit = std::max(maxLogit, logit);
+    }
+    double sumExp = 0.0;
+    for (double &w : weights) {
+        w = std::exp(w - maxLogit);
+        sumExp += w;
+    }
+    if (sumExp <= 0.0) {
+        return 0.0;
+    }
+    double entropy = 0.0;
+    for (const double w : weights) {
+        const double p = w / sumExp;
+        if (p > 0.0) {
+            entropy -= p * std::log(p);
+        }
+    }
+    return entropy;
+}
 
 // Phase 19 serving-strategy constants (V2 §4.13). No planned experiment varies these, so they stay
 // named constants here rather than config knobs (D24, the no-premature-config convention).
@@ -264,6 +331,22 @@ ExperimentResult EventDrivenRunner::run() {
     const bool sessionDynamics = config_.realism.sessionDynamics;
     const bool learningEnabled = config_.learning.enabled;
     const bool personalizedDiversity = config_.realism.personalizedDiversity;
+    // Phase 20 gates (D17): either may be on alone. preference_evolution runs the exposure-driven
+    // PreferenceEvolution after each impression; retention.enabled swaps the RetentionModel in for
+    // the P18 baseline return-delay draw + adds the session-end hook. Both instances are
+    // constructed ONLY when their gate is on, so a gates-off run makes ZERO new calls and ZERO new
+    // draws (byte-identical, D17). The scaffold components are no-op / baseline-reproducing stubs
+    // that packages A/B fill in their worktrees.
+    const bool preferenceEvolution = config_.realism.preferenceEvolution;
+    const bool retentionEnabled = config_.retention.enabled;
+    std::optional<PreferenceEvolution> evolution;
+    if (preferenceEvolution) {
+        evolution.emplace(config_.evolution);
+    }
+    std::optional<RetentionModel> retention;
+    if (retentionEnabled) {
+        retention.emplace(config_.retention);
+    }
 
     // 1. Dataset + FROZEN cold-start prior — identical to the legacy runner (TDD 11.1). Mid-run
     //    injection is BLOCKED under content_v2 (the P13 config guard) and event mode requires the
@@ -421,6 +504,57 @@ ExperimentResult EventDrivenRunner::run() {
     const bool driftConfigured = drift.configured();
     std::vector<std::vector<double>> userSatSeq(driftConfigured ? userCount : 0);
 
+    // --- Phase 20 long-term metrics accumulators (V2 §4.15-4.17/§6, D22). Populated ONLY under a
+    //     P20 gate (preference_evolution || retention.enabled); a gates-off run allocates nothing
+    //     new and takes no new branch, so its event stream + output stay byte-identical (D17). ---
+    const bool longTermGate = preferenceEvolution || retentionEnabled;
+    // Initial per-channel preferences captured at run start (p0) for the within-world shift
+    // (1 - cos(p0, p_now)) and the per-user hidden_preference_final export.
+    std::vector<Embedding> initialSemPref;
+    std::vector<Embedding> initialVisPref;
+    std::vector<Embedding> initialMusPref;
+    std::vector<Embedding> initialEmoPref;
+    // Per-day session accumulation, attributed to each CLOSED session's START day (day boundaries =
+    // floor(startTime / 86400)); only closed sessions feed this (drained/open sessions are
+    // excluded, the P16 convention — see the run-end drain).
+    struct LongTermDayAcc {
+        uint64_t sessions = 0;
+        double satSum = 0.0; // sum of per-session mean satisfaction
+        std::unordered_set<uint32_t> activeUsers;
+    };
+    std::vector<LongTermDayAcc> ltDay;
+    // Per-user session starts + satisfaction for retention_1d/7d and satisfaction-weighted
+    // retention.
+    struct UserSessionAcc {
+        std::vector<Timestamp> starts;
+        double satSum = 0.0;
+        std::size_t sessions = 0;
+    };
+    std::vector<UserSessionAcc> userSessions;
+    // Per-day END-OF-DAY population snapshots (mean trust over ALL users; mean within-world
+    // semantic shift), taken at day boundaries — mirroring the alignment snapshot.
+    std::vector<double> trustByDay;
+    std::vector<double> prefShiftByDay;
+    // First-churn day per user (-1 = never) -> per-day cumulative churn + the run-end churn rate.
+    std::vector<long> churnDay;
+    if (longTermGate) {
+        initialSemPref.reserve(userCount);
+        initialVisPref.reserve(userCount);
+        initialMusPref.reserve(userCount);
+        initialEmoPref.reserve(userCount);
+        for (std::size_t u = 0; u < userCount; ++u) {
+            initialSemPref.push_back(ds.hiddenStates[u].hiddenPreference);
+            initialVisPref.push_back(ds.hiddenStates[u].visualPreference);
+            initialMusPref.push_back(ds.hiddenStates[u].musicPreference);
+            initialEmoPref.push_back(ds.hiddenStates[u].emotionalPreference);
+        }
+        ltDay.resize(numDays);
+        userSessions.resize(userCount);
+        trustByDay.assign(numDays, 0.0);
+        prefShiftByDay.assign(numDays, 0.0);
+        churnDay.assign(userCount, -1);
+    }
+
     EventQueue queue;
 
     // --- helpers (lambdas capturing the run state) --------------------------------------------
@@ -474,6 +608,27 @@ ExperimentResult EventDrivenRunner::run() {
             sum += dot(ds.users[u].estimatedPreference, ds.hiddenStates[u].hiddenPreference);
         }
         return sum / static_cast<double>(userCount);
+    };
+
+    // Long-term per-day population snapshot (P20): mean trust over ALL users (uninitialized trust
+    // reads the platformTrust trait, contract §2/§5) and mean within-world semantic shift
+    // (1 - cos(p0, p_now)). Recomputed at each day boundary (~numDays times); cheap.
+    auto longTermSnapshot = [&](double &meanTrust, double &meanShift) {
+        if (userCount == 0) {
+            meanTrust = 0.0;
+            meanShift = 0.0;
+            return;
+        }
+        double trustSum = 0.0;
+        double shiftSum = 0.0;
+        for (std::size_t u = 0; u < userCount; ++u) {
+            const HiddenUserState &h = ds.hiddenStates[u];
+            trustSum +=
+                h.retention.trust >= 0.0 ? h.retention.trust : static_cast<double>(h.platformTrust);
+            shiftSum += 1.0 - cosineSim(initialSemPref[u], h.hiddenPreference);
+        }
+        meanTrust = trustSum / static_cast<double>(userCount);
+        meanShift = shiftSum / static_cast<double>(userCount);
     };
 
     // --- the single event dispatcher (one impression's worth of work per event) ---------------
@@ -689,6 +844,16 @@ ExperimentResult EventDrivenRunner::run() {
             wi.archetypeIndex = ds.hiddenReelStates[reelId.value].archetypeIndex;
             welfareMetrics.add(dayIdx, wi);
 
+            // P20-HOOK(evolution): exposure-driven preference evolution, applied once per
+            // impression AFTER stepV2 (BehaviourModelV2), gate-on only. Draws ZERO rng (the
+            // reserved "preference-evolution" stream stays unused, D19). The scaffold
+            // applyImpression is a no-op, so gate-off AND gate-on-stub are behaviour-identical;
+            // package A fills it (reshapes hidden.exposure, moves the preference channels, erodes
+            // retention.trust).
+            if (preferenceEvolution) {
+                evolution->applyImpression(ds.hiddenStates[u], reel, latent, e.time);
+            }
+
             if (learningEnabled) {
                 updater.apply(user, reel, step.event);
                 ++applyCount[u]; // the staleness clock: one apply advances this user's serving
@@ -758,6 +923,35 @@ ExperimentResult EventDrivenRunner::run() {
                 // whenever finishTs spills past the horizon (the ExitApp event would be dropped);
                 // collecting here records every fired exit and keeps the day attribution identical
                 // to legacy.
+                // P20-HOOK(session-end): the RetentionModel updates hidden retention state (habit /
+                // trust memory / last-session satisfaction+regret) from the just-closed session
+                // BEFORE the return-delay draw fires (in the ExitApp handler below). Gate-on only;
+                // the scaffold onSessionEnd is a no-op, so gate-off AND gate-on-stub are
+                // behaviour-identical. Package B fills it (+ the per-day long-term accumulation).
+                if (retentionEnabled) {
+                    const double n = static_cast<double>(closedRec.impressions);
+                    const double meanSat = n > 0.0 ? closedRec.satisfactionSum / n : 0.0;
+                    const double meanRegret = n > 0.0 ? closedRec.regretSum / n : 0.0;
+                    retention->onSessionEnd(ds.hiddenStates[u], meanSat, meanRegret,
+                                            closedRec.endTime);
+                }
+                // Long-term per-day + per-user session accumulation (P20), attributed to the
+                // session's START day. Only closed sessions reach here (drained/open sessions are
+                // excluded — the documented P16 convention, so retention/long-term never counts a
+                // non-exit).
+                if (longTermGate) {
+                    const std::size_t startDay = std::min<std::size_t>(
+                        numDays - 1,
+                        static_cast<std::size_t>(closedRec.startTime / kSecondsPerSimulatedDay));
+                    const double n = static_cast<double>(closedRec.impressions);
+                    const double sMean = n > 0.0 ? closedRec.satisfactionSum / n : 0.0;
+                    ltDay[startDay].sessions += 1;
+                    ltDay[startDay].satSum += sMean;
+                    ltDay[startDay].activeUsers.insert(u);
+                    userSessions[u].starts.push_back(closedRec.startTime);
+                    userSessions[u].satSum += sMean;
+                    userSessions[u].sessions += 1;
+                }
                 sessionHealth.add(dayIdx, closedRec);
                 scheduleEvent(EventType::ExitApp, e.userId, finishTs);
             } else {
@@ -802,11 +996,32 @@ ExperimentResult EventDrivenRunner::run() {
             // Baseline return-delay (stream "scheduling", D19). Reading the hidden
             // baselineDailyUsage trait is a documented evaluation-side read of simulation state;
             // the draw is dropped if the return lands beyond the horizon.
+            // P20-HOOK(return-delay): under retention.enabled the RetentionModel REPLACES this P18
+            // baseline consumer at the exact same "scheduling"-stream call site (D19 wholesale
+            // replacement; the scaffold stub reproduces baselineReturnDelay's single gaussian draw
+            // so behaviour is identical pre-integration). Package B adds the churn skip (schedule
+            // NO ReturnToApp when retention.churned) + the per-day long-term accumulation; the stub
+            // never churns, so the scaffold always schedules the return, matching baseline.
+            // Gate-off keeps the P18 baselineReturnDelay verbatim — byte-identical (D17).
             const Timestamp returnDelay =
-                baselineReturnDelay(schedulingRng, config_.scheduling,
-                                    static_cast<double>(ds.hiddenStates[u].baselineDailyUsage));
-            returnDelays.push_back(static_cast<double>(returnDelay));
-            scheduleEvent(EventType::ReturnToApp, e.userId, e.time + returnDelay);
+                retentionEnabled
+                    ? retention->nextReturnDelay(ds.hiddenStates[u], e.time, schedulingRng)
+                    : baselineReturnDelay(
+                          schedulingRng, config_.scheduling,
+                          static_cast<double>(ds.hiddenStates[u].baselineDailyUsage));
+            if (retentionEnabled && ds.hiddenStates[u].retention.churned) {
+                // Churn skip (P20): nextReturnDelay marked the user churned (its delay exceeded
+                // retention.churn_delay_threshold_seconds). Schedule NO ReturnToApp — the user
+                // leaves the platform, ending their timeline. Record the first-churn day for the
+                // per-day cumulative-churn metric; the sentinel delay is NOT a real scheduled
+                // return, so it is excluded from the returnDelays (return-delay) stats.
+                if (longTermGate && churnDay[u] < 0) {
+                    churnDay[u] = static_cast<long>(dayIdx);
+                }
+            } else {
+                returnDelays.push_back(static_cast<double>(returnDelay));
+                scheduleEvent(EventType::ReturnToApp, e.userId, e.time + returnDelay);
+            }
             break;
         }
 
@@ -888,6 +1103,15 @@ ExperimentResult EventDrivenRunner::run() {
             for (std::size_t d = processedDay; d < dayIdx && d < numDays; ++d) {
                 alignmentByDay[d] = a;
             }
+            if (longTermGate) {
+                double mt = 0.0;
+                double ms = 0.0;
+                longTermSnapshot(mt, ms);
+                for (std::size_t d = processedDay; d < dayIdx && d < numDays; ++d) {
+                    trustByDay[d] = mt;
+                    prefShiftByDay[d] = ms;
+                }
+            }
         }
         processedDay = dayIdx;
         anyProcessed = true;
@@ -909,10 +1133,26 @@ ExperimentResult EventDrivenRunner::run() {
             alignmentByDay[d] = a;
         }
     }
+    // Final long-term snapshot fills the last active day + trailing empty days (end-of-run state).
+    if (longTermGate) {
+        double mt = 0.0;
+        double ms = 0.0;
+        longTermSnapshot(mt, ms);
+        for (std::size_t d = (anyProcessed ? processedDay : 0); d < numDays; ++d) {
+            trustByDay[d] = mt;
+            prefShiftByDay[d] = ms;
+        }
+    }
 
     // 7. Run-end drain: sessions still open at the horizon become RunEnded records (excluded from
     //    exit-rate denominators), attributed to the last day — the collected-where-closed
     //    convention, mirroring the legacy runner's run-end drain.
+    //    P20 DECISION (drained sessions do NOT feed retention/long-term): these RunEnded records go
+    //    to sessionHealth ONLY. RetentionModel::onSessionEnd and the long-term session/retention
+    //    accumulators fire exclusively on the inline CLOSED-session path (a real classified exit),
+    //    matching P16's drained-session exclusions — a horizon cutoff is not a real return
+    //    decision, so it must not strengthen habit, memorize a "last session", or count toward
+    //    retention_1d/7d.
     if (sessionDynamics && numDays > 0) {
         for (const SessionRecord &openRec : sim.drainOpenSessions()) {
             sessionHealth.add(numDays - 1, openRec);
@@ -1167,6 +1407,147 @@ ExperimentResult EventDrivenRunner::run() {
         }
     }
 
+    // Phase 20 long-term metrics gate (D22): the frozen `long_term` summary block + the
+    // longterm_metrics.csv are emitted ONLY when a P20 gate is on. Package B fills the
+    // retention/trust/preference-shift fields under the gate; the scaffold sets just `configured`
+    // (+ retentionConfigured, event mode) so the block appears for gate-on runs with the stub's
+    // zero values. Gates-off leaves it false → no block, no CSV, byte-identical to a pre-Phase-20
+    // run (D17).
+    result.longTerm.configured = longTermGate;
+    result.longTerm.retentionConfigured = retentionEnabled;
+    if (longTermGate) {
+        LongTermReport &lt = result.longTerm;
+        const double days = result.eventMode.simulatedDays;
+
+        // Per-day rows: sessions / active users / mean session satisfaction (attributed by session
+        // START day) + the end-of-day trust & within-world-shift snapshots + cumulative churn
+        // (users whose first churn day is <= d).
+        lt.byDay.reserve(numDays);
+        for (std::size_t d = 0; d < numDays; ++d) {
+            const LongTermDayAcc &acc = ltDay[d];
+            uint64_t cumChurned = 0;
+            for (std::size_t u = 0; u < userCount; ++u) {
+                if (churnDay[u] >= 0 && static_cast<std::size_t>(churnDay[u]) <= d) {
+                    ++cumChurned;
+                }
+            }
+            LongTermDayPoint pt;
+            pt.day = static_cast<uint32_t>(d);
+            pt.sessions = acc.sessions;
+            pt.activeUsers = acc.activeUsers.size();
+            pt.sessionsPerActiveUser = acc.activeUsers.empty()
+                                           ? 0.0
+                                           : static_cast<double>(acc.sessions) /
+                                                 static_cast<double>(acc.activeUsers.size());
+            pt.meanSessionSatisfaction =
+                acc.sessions > 0 ? acc.satSum / static_cast<double>(acc.sessions) : 0.0;
+            pt.meanTrust = trustByDay[d];
+            pt.cumulativeChurned = cumChurned;
+            pt.meanPreferenceShiftFromInitial = prefShiftByDay[d];
+            lt.byDay.push_back(pt);
+        }
+
+        // Retention windows (contract §5). Cohort denominator = users with >=1 CLOSED session (the
+        // participating cohort; a user who never opened cannot be "retained"). userFirstDayEnd =
+        // end of the simulated day containing the user's first session; retained_Nd = a session
+        // STARTS in (userFirstDayEnd, +N days].
+        std::size_t participating = 0;
+        std::size_t retained1d = 0;
+        std::size_t retained7d = 0;
+        double swrNum = 0.0; // sum_u retained7d_u * satbar_u
+        double swrDen = 0.0; // sum_u satbar_u
+        uint64_t totalSessions = 0;
+        for (std::size_t u = 0; u < userCount; ++u) {
+            const UserSessionAcc &us = userSessions[u];
+            totalSessions += us.sessions;
+            if (us.sessions == 0) {
+                continue;
+            }
+            ++participating;
+            Timestamp first = us.starts.front();
+            for (const Timestamp s : us.starts) {
+                first = std::min(first, s);
+            }
+            const Timestamp firstDayEnd =
+                (first / kSecondsPerSimulatedDay + 1) * kSecondsPerSimulatedDay;
+            bool in1d = false;
+            bool in7d = false;
+            for (const Timestamp s : us.starts) {
+                if (s > firstDayEnd && s <= firstDayEnd + kSecondsPerSimulatedDay) {
+                    in1d = true;
+                }
+                if (s > firstDayEnd && s <= firstDayEnd + 7 * kSecondsPerSimulatedDay) {
+                    in7d = true;
+                }
+            }
+            if (in1d) {
+                ++retained1d;
+            }
+            if (in7d) {
+                ++retained7d;
+            }
+            const double satbar = std::max(0.0, us.satSum / static_cast<double>(us.sessions));
+            swrNum += (in7d ? 1.0 : 0.0) * satbar;
+            swrDen += satbar;
+        }
+        lt.retention1d = participating > 0
+                             ? static_cast<double>(retained1d) / static_cast<double>(participating)
+                             : 0.0;
+        lt.retention7d = participating > 0
+                             ? static_cast<double>(retained7d) / static_cast<double>(participating)
+                             : 0.0;
+        lt.sessionsPerUserPerDay =
+            (userCount > 0 && days > 0.0)
+                ? static_cast<double>(totalSessions) / (static_cast<double>(userCount) * days)
+                : 0.0;
+        lt.satisfactionWeightedRetention = swrDen > 0.0 ? swrNum / swrDen : 0.0;
+
+        // Population means over ALL users at run end (churn rate over the whole base; trust reads
+        // platformTrust when uninitialized). meanChurnProbability needs the model, so it is 0 when
+        // retention is off (evolution-only run — no RetentionModel constructed).
+        std::size_t churnedCount = 0;
+        double trustSum = 0.0;
+        double habitSum = 0.0;
+        double shiftSum = 0.0;
+        double entropySum = 0.0;
+        double churnProbSum = 0.0;
+        for (std::size_t u = 0; u < userCount; ++u) {
+            const HiddenUserState &h = ds.hiddenStates[u];
+            if (churnDay[u] >= 0) {
+                ++churnedCount;
+            }
+            trustSum +=
+                h.retention.trust >= 0.0 ? h.retention.trust : static_cast<double>(h.platformTrust);
+            habitSum += h.retention.habitStrength;
+            shiftSum += 1.0 - cosineSim(initialSemPref[u], h.hiddenPreference);
+            entropySum += preferenceEntropy(h.hiddenPreference, ds.topics);
+            if (retentionEnabled) {
+                churnProbSum += retention->churnProbability(h);
+            }
+        }
+        const double invUsers = userCount > 0 ? 1.0 / static_cast<double>(userCount) : 0.0;
+        lt.churnRate = static_cast<double>(churnedCount) * invUsers;
+        lt.meanChurnProbability = churnProbSum * invUsers;
+        lt.meanFinalTrust = trustSum * invUsers;
+        lt.meanFinalHabit = habitSum * invUsers;
+        lt.meanPreferenceShiftFromInitial = shiftSum * invUsers;
+        lt.meanFinalPreferenceEntropy = entropySum * invUsers;
+
+        // Welfare-group trust goes LIVE under a P20 gate (P15 placeholder resolved). The overall
+        // welfare block emits the run-end population mean trust; each per-day welfare row (event
+        // "rounds" ARE simulated days) emits that day's end-of-day mean trust — the same value as
+        // longterm_metrics.csv's mean_trust. A gate-off event run (and every round-robin run) keeps
+        // the placeholder 0, so its welfare output stays byte-identical (D17).
+        if (result.welfare.configured) {
+            result.welfare.trustModeled = true;
+            result.welfare.platformTrust = lt.meanFinalTrust;
+            for (std::size_t r = 0; r < result.welfare.byRound.size(); ++r) {
+                result.welfare.byRound[r].platformTrust =
+                    r < trustByDay.size() ? trustByDay[r] : lt.meanFinalTrust;
+            }
+        }
+    }
+
     // 9. Write the §26 output layout (ResultsWriter emits the event_mode block only when
     // configured).
     std::filesystem::create_directories(result.directory);
@@ -1177,6 +1558,33 @@ ExperimentResult EventDrivenRunner::run() {
     meta.topicCount = ds.topics.size();
     meta.dimensions = config_.simulation.dimensions;
     ResultsWriter::writeAll(result, meta);
+
+    // Per-user hidden-preference export (P20, gate-on only — evaluation carve-out, D18-legal): the
+    // per-channel preference shift vs run start + the final semantic vector, backing package C's
+    // counterfactual distortion measure (§5). The event runner owns the hidden states, so it builds
+    // the rows and hands them to the writer; a gates-off run writes nothing (byte-identical, D17).
+    if (longTermGate) {
+        std::vector<ResultsWriter::HiddenPreferenceFinalRow> rows;
+        rows.reserve(userCount);
+        for (std::size_t u = 0; u < userCount; ++u) {
+            const HiddenUserState &h = ds.hiddenStates[u];
+            ResultsWriter::HiddenPreferenceFinalRow row;
+            row.userId = ds.users[u].id.value;
+            row.plasticity = static_cast<double>(h.preferencePlasticity);
+            row.churned = h.retention.churned;
+            row.semanticShift = 1.0 - cosineSim(initialSemPref[u], h.hiddenPreference);
+            row.visualShift = 1.0 - cosineSim(initialVisPref[u], h.visualPreference);
+            row.musicShift = 1.0 - cosineSim(initialMusPref[u], h.musicPreference);
+            row.emotionalShift = 1.0 - cosineSim(initialEmoPref[u], h.emotionalPreference);
+            row.semanticFinal.assign(h.hiddenPreference.begin(), h.hiddenPreference.end());
+            rows.push_back(std::move(row));
+        }
+        std::sort(
+            rows.begin(), rows.end(),
+            [](const ResultsWriter::HiddenPreferenceFinalRow &a,
+               const ResultsWriter::HiddenPreferenceFinalRow &b) { return a.userId < b.userId; });
+        ResultsWriter::writeHiddenPreferenceFinalCsv(result.directory, rows);
+    }
 
     return result;
 }

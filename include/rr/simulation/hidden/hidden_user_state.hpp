@@ -4,6 +4,8 @@
 
 #include "rr/core/embedding.hpp"
 #include "rr/domain/ids.hpp"
+#include "rr/simulation/hidden/hidden_exposure_state.hpp"
+#include "rr/simulation/hidden/hidden_retention_state.hpp"
 
 namespace rr {
 
@@ -87,6 +89,16 @@ struct HiddenUserState {
     float platformTrust = 0.0f;        // P20 retention
     float baselineDailyUsage = 0.0f;   // P20 retention (expected sessions per simulated day)
     float preferencePlasticity = 0.0f; // P20 exposure-driven preference evolution
+
+    // --- Phase 20 hidden long-term state (D18): the exposure accumulators and
+    // retention/trust/habit
+    //     a user carries between sessions. Default-initialized (NO generator changes, NO new rng
+    //     draws — gate-off runs never touch them, D17). Package A owns exposure's shape; the
+    //     retention field list is the frozen §2 surface (package B owns all but trust). The `{}`
+    //     default member initializers keep HiddenUserState brace-init sites warning-free
+    //     (-Wmissing-field-initializers) exactly like the other class-type members above. ---
+    HiddenExposureState exposure{};
+    HiddenRetentionState retention{};
 };
 
 } // namespace rr

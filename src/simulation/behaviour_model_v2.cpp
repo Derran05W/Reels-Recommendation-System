@@ -5,6 +5,7 @@
 
 #include "rr/core/embedding.hpp"
 #include "rr/simulation/latent_model.hpp"
+#include "rr/simulation/preference_evolution.hpp" // Phase 20 exposureSatisfactionDelta
 
 // BehaviourModelV2 (V2 TDD 4.3/4.4, Phase 14) — the latent-conditioned observable sampler that
 // replaces the V1 BehaviourModel under realism.latent_reactions. Engagement is evidence, not
@@ -291,6 +292,22 @@ BehaviourOutcome BehaviourModelV2::simulate(const HiddenUserState &hidden, const
         const double emoAdj = static_cast<double>(latentOut.emotionalValue) +
                               fatigueEmotionalDelta(sessionConfig_, *session);
         latentOut.emotionalValue = static_cast<float>(clamp01(emoAdj));
+    }
+    // Stage 1c — Phase 20 exposure-state modulation (V2 TDD §4.16), the PERSISTENT long-term
+    // analogue of the Phase 16 session fatigue above: exhausted topics, burnt-out creators,
+    // novelty-depleted repeats, and averted topics make the SAME reel genuinely less satisfying.
+    // Guarded on hidden.exposure.initialized (set ONLY by PreferenceEvolution::applyImpression,
+    // gate-on) — so a gate-off / pre-Phase-20 run leaves this a strict no-op and stays
+    // byte-identical (D17). Pure arithmetic on latentOut: ZERO rng draws, so the pinned
+    // behaviour/satisfaction draw order is unchanged (values only). Structurally SEPARATE from the
+    // session fatigue above — exposure state persists across sessions and decays over days, session
+    // fatigue resets per session (V2 TDD 4.16 / exit-criterion 3). Applied to satisfaction only
+    // (aversion/exhaustion dull enjoyment); the emotional channel is left to the session fatigue
+    // path.
+    if (hidden.exposure.initialized) {
+        const double satAdj = static_cast<double>(latentOut.immediateSatisfaction) +
+                              exposureSatisfactionDelta(hidden, reel);
+        latentOut.immediateSatisfaction = static_cast<float>(std::clamp(satAdj, -1.0, 1.0));
     }
     // Stage 2 — the observables, on the "behaviour" stream (owned wholesale here, D19).
     return sampleObservables(hidden, reel, hiddenReel, creator, latentOut, behaviourRng);

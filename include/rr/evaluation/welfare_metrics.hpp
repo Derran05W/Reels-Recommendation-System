@@ -88,8 +88,14 @@ struct WelfareReport {
     // denominator. Placeholders as above.
     double satisfactionPerMinute = 0.0;
     double watchMinutes = 0.0;
-    double harmfulFatigue = 0.0; // placeholder 0 (P16)
-    double platformTrust = 0.0;  // placeholder 0 (P20)
+    double harmfulFatigue = 0.0; // placeholder 0 until P16 (realism.session_dynamics)
+    // Platform trust (V2 §6). Placeholder 0 UNTIL a P20 gate makes it live: under
+    // preference_evolution/retention the event runner fills `platformTrust` with the run-end
+    // population mean trust (uninitialized trust reads the platformTrust trait) and sets
+    // `trustModeled` true; the per-round trust is in byRound[r].platformTrust. Left 0 / false for
+    // every gate-off and round-robin run, so their welfare output stays byte-identical (D17).
+    double platformTrust = 0.0;
+    bool trustModeled = false;
 
     std::vector<WelfareRoundPoint> byRound;
     std::vector<ArchetypeWelfare> byArchetype; // one row per catalog archetype, index order

@@ -278,6 +278,44 @@ struct EventModeReport {
     std::vector<ServingDayPoint> servingByDay;
 };
 
+// Phase 20 long-term metrics (V2 TDD §4.15–4.17/§6, D22 additive). FROZEN SCHEMA (contracts §5):
+// package B fills these, package C consumes them, so the field names + comments are the shared
+// cross-package surface — do not rename without an orchestrator sign-off. `configured` is false
+// unless a P20 gate is on, in which case NO `long_term` summary block and NO longterm_metrics.csv
+// are written and the run is byte-identical to a pre-Phase-20 run (D17). LongTermDayPoint is
+// defined FIRST so LongTermReport::byDay is a vector of a complete type.
+struct LongTermDayPoint {
+    uint32_t day = 0; // simulated day index from run start
+    uint64_t sessions = 0;
+    uint64_t activeUsers = 0; // users with >=1 session that day
+    double sessionsPerActiveUser = 0.0;
+    double meanSessionSatisfaction = 0.0;
+    double meanTrust = 0.0; // mean over ALL users at day end (uninitialized trust reads
+                            // as the user's platformTrust trait)
+    uint64_t cumulativeChurned = 0;
+    double meanPreferenceShiftFromInitial = 0.0; // as-of day end
+};
+
+struct LongTermReport {
+    bool configured = false;          // true iff preference_evolution || retention.enabled
+    bool retentionConfigured = false; // true iff retention.enabled (event mode)
+    double retention1d = 0.0;         // fraction of users with >=1 session STARTING in
+                                      // (userFirstDayEnd, +1 day]; userFirstDayEnd = end of the
+                                      // simulated day containing the user's first session
+    double retention7d = 0.0;         // same with +7 days
+    double sessionsPerUserPerDay = 0.0;
+    double satisfactionWeightedRetention = 0.0; // sum_u(retained7d_u * satbar_u)/sum_u(satbar_u),
+                                                // satbar_u = max(0, user mean session satisfaction)
+    double churnRate = 0.0;                     // churned users / users
+    double meanChurnProbability = 0.0;          // mean of model churnProbability at run end
+    double meanFinalTrust = 0.0;
+    double meanFinalHabit = 0.0;
+    double meanPreferenceShiftFromInitial = 0.0; // mean_u (1 - cos(p_u(0), p_u(T))), semantic
+    double meanFinalPreferenceEntropy = 0.0;     // mean_u entropy of softmax over topic-centre
+                                                 // cosine similarities (documented in impl)
+    std::vector<LongTermDayPoint> byDay;         // longterm_metrics.csv rows
+};
+
 // Everything one experiment produced, in memory. The ResultsWriter serializes it to disk; the
 // simulate CLI prints headline lines from it. `directory` is the created <experiment-id> dir.
 struct ExperimentResult {
@@ -377,6 +415,13 @@ struct ExperimentResult {
     // the event-log digest + count and the event-mode session-health additions. See
     // EventModeReport.
     EventModeReport eventMode;
+
+    // Phase 20 long-term metrics group (V2 TDD §4.15–4.17/§6, D22). `configured` is false unless a
+    // P20 gate (realism.preference_evolution || retention.enabled) is on, in which case no
+    // `long_term` block / longterm_metrics.csv is written and the run is byte-identical to a
+    // pre-Phase-20 run (D17). Package B fills it under the gate; package C consumes the frozen §5
+    // schema. See LongTermReport.
+    LongTermReport longTerm;
 };
 
 // Runs the end-to-end evaluation loop (TDD 20 + phase-4 task 4, phase-7 tasks 1/4) from a

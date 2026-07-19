@@ -303,6 +303,13 @@ struct RealismConfig {
     // session_dynamics (the estimator reads exit-after-repetition signals; throws at load
     // otherwise). The fixed-diversity path is untouched (D17).
     bool personalizedDiversity = false;
+    // Phase 20 gate: exposure-driven preference evolution + saturation/aversion. On => the
+    // PreferenceEvolution component runs once per impression AFTER stepV2, mutating hidden
+    // preference channels / exposure accumulators / retention.trust (V2 TDD 4.15/4.16). REQUIRES
+    // session_dynamics (throws at config load otherwise, D17). Independent of retention.enabled —
+    // either P20 gate may be on alone. Draws ZERO rng (the reserved "preference-evolution" stream
+    // stays unused; D19), so a gate-off run is byte-identical to a pre-Phase-20 run.
+    bool preferenceEvolution = false;
     // Size of the global language set (V2 TDD 4.1); language ids are 0..languages-1 with the
     // skewed distribution rr::languageWeights. Must be >= 1.
     uint32_t languages = 8;
@@ -397,6 +404,38 @@ struct SessionDynamicsConfig {
     bool operator==(const SessionDynamicsConfig &) const = default;
 };
 
+// Exposure-driven preference-evolution parameters (V2 TDD 4.15, Phase 20). Consumed ONLY when
+// realism.preference_evolution is on (which requires realism.session_dynamics). eta_evo is the
+// per-impression base reinforcement rate η in p' = normalize((1-η_u)·p + η_u·s·v), where s is the
+// HIDDEN latent satisfaction (NOT reward) and η_u = eta_evo scaled per user by the P13
+// preferencePlasticity trait inside PreferenceEvolution. Every OTHER §4.16 constant
+// (exhaustion/burnout/novelty/aversion scales + away-decay half-lives) stays a NAMED CONSTANT in
+// preference_evolution.cpp (D24 no-premature-config); only the swept base rate is config surface,
+// so this block holds just it.
+struct EvolutionConfig {
+    double etaEvo = 0.02;
+    bool operator==(const EvolutionConfig &) const = default;
+};
+
+// Retention / churn parameters (V2 TDD 4.17, Phase 20). Consumed ONLY when retention.enabled is on
+// (which requires realism.session_dynamics AND simulation.scheduler == "event_queue"): the
+// RetentionModel replaces P18's baseline return-delay consumer under the gate (D19 wholesale
+// replacement at the SAME "scheduling"-stream call site). All OTHER §4.17 shape constants (habit
+// strengthen/decay rates, the time-of-day curve, trust coupling) stay NAMED CONSTANTS in
+// retention_model.cpp (D24); only the churn threshold and hazard floor — the two knobs the
+// failure-mode experiments sweep — are config surface.
+struct RetentionConfig {
+    // Master gate. Load-validation: requires realism.session_dynamics AND scheduler=='event_queue'.
+    bool enabled = false;
+    // A computed next-return delay strictly greater than this marks the user churned (the caller
+    // then schedules NO ReturnToApp). Default 604800 = 7 simulated days.
+    double churnDelayThresholdSeconds = 604800.0;
+    // Minimum effective per-day return hazard for a non-churned user (bounds delays away from
+    // infinity; exact use documented in retention_model.cpp). Default 0.02.
+    double hazardFloor = 0.02;
+    bool operator==(const RetentionConfig &) const = default;
+};
+
 // Evaluation-harness parameters (TDD 19 / phase-4 task 5). The oracle exhaustively scores all
 // reels by true hidden affinity, so it runs only on a Bernoulli-sampled subset of requests; the
 // rate is config-driven and recorded in every experiment's output.
@@ -440,6 +479,8 @@ struct ExperimentConfig {
     SessionDynamicsConfig sessionDynamics;
     SchedulingConfig scheduling;
     ServingConfig serving;
+    EvolutionConfig evolution;
+    RetentionConfig retention;
     RewardConfig reward;
     EvaluationConfig evaluation;
     RealismConfig realism;
@@ -483,6 +524,10 @@ void to_json(nlohmann::json &j, const SchedulingConfig &c);
 void from_json(const nlohmann::json &j, SchedulingConfig &c);
 void to_json(nlohmann::json &j, const ServingConfig &c);
 void from_json(const nlohmann::json &j, ServingConfig &c);
+void to_json(nlohmann::json &j, const EvolutionConfig &c);
+void from_json(const nlohmann::json &j, EvolutionConfig &c);
+void to_json(nlohmann::json &j, const RetentionConfig &c);
+void from_json(const nlohmann::json &j, RetentionConfig &c);
 void to_json(nlohmann::json &j, const RecommendationAlgorithm &a);
 void from_json(const nlohmann::json &j, RecommendationAlgorithm &a);
 void to_json(nlohmann::json &j, const ExperimentConfig &c);

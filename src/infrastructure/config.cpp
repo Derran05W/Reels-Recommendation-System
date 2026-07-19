@@ -420,6 +420,7 @@ void to_json(json &j, const RealismConfig &c) {
              {"latent_reactions", c.latentReactions},
              {"session_dynamics", c.sessionDynamics},
              {"personalized_diversity", c.personalizedDiversity},
+             {"preference_evolution", c.preferenceEvolution},
              {"languages", c.languages},
              {"archetypes", c.archetypes},
              {"cohort_mix", c.cohortMix}};
@@ -428,11 +429,12 @@ void to_json(json &j, const RealismConfig &c) {
 void from_json(const json &j, RealismConfig &c) {
     ensureKnownKeys(j, "realism",
                     {"content_v2", "latent_reactions", "session_dynamics", "personalized_diversity",
-                     "languages", "archetypes", "cohort_mix"});
+                     "preference_evolution", "languages", "archetypes", "cohort_mix"});
     readKey(j, "content_v2", c.contentV2);
     readKey(j, "latent_reactions", c.latentReactions);
     readKey(j, "session_dynamics", c.sessionDynamics);
     readKey(j, "personalized_diversity", c.personalizedDiversity);
+    readKey(j, "preference_evolution", c.preferenceEvolution);
     readKey(j, "cohort_mix", c.cohortMix);
     readKey(j, "languages", c.languages);
     readKey(j, "archetypes", c.archetypes);
@@ -453,6 +455,12 @@ void from_json(const json &j, RealismConfig &c) {
     if (c.personalizedDiversity && !c.sessionDynamics) {
         throw std::invalid_argument(
             "realism.personalized_diversity requires realism.session_dynamics");
+    }
+    // Phase 20: exposure-driven preference evolution reads the hidden latent satisfaction/regret
+    // that session dynamics produces, so it requires the session-dynamics gate stack (D17).
+    if (c.preferenceEvolution && !c.sessionDynamics) {
+        throw std::invalid_argument(
+            "realism.preference_evolution requires realism.session_dynamics");
     }
 }
 
@@ -587,6 +595,26 @@ void from_json(const json &j, ServingConfig &c) {
     readKey(j, "intent_swing_cosine_threshold", c.intentSwingCosineThreshold);
 }
 
+void to_json(json &j, const EvolutionConfig &c) { j = json{{"eta_evo", c.etaEvo}}; }
+
+void from_json(const json &j, EvolutionConfig &c) {
+    ensureKnownKeys(j, "evolution", {"eta_evo"});
+    readKey(j, "eta_evo", c.etaEvo);
+}
+
+void to_json(json &j, const RetentionConfig &c) {
+    j = json{{"enabled", c.enabled},
+             {"churn_delay_threshold_seconds", c.churnDelayThresholdSeconds},
+             {"hazard_floor", c.hazardFloor}};
+}
+
+void from_json(const json &j, RetentionConfig &c) {
+    ensureKnownKeys(j, "retention", {"enabled", "churn_delay_threshold_seconds", "hazard_floor"});
+    readKey(j, "enabled", c.enabled);
+    readKey(j, "churn_delay_threshold_seconds", c.churnDelayThresholdSeconds);
+    readKey(j, "hazard_floor", c.hazardFloor);
+}
+
 void to_json(json &j, const ExperimentConfig &c) {
     j = json{{"simulation", c.simulation},
              {"recommendation", c.recommendation},
@@ -602,6 +630,8 @@ void to_json(json &j, const ExperimentConfig &c) {
              {"session_dynamics", c.sessionDynamics},
              {"scheduling", c.scheduling},
              {"serving", c.serving},
+             {"evolution", c.evolution},
+             {"retention", c.retention},
              {"reward", c.reward},
              {"evaluation", c.evaluation},
              {"realism", c.realism}};
@@ -611,8 +641,8 @@ void from_json(const json &j, ExperimentConfig &c) {
     ensureKnownKeys(j, "<top-level>",
                     {"simulation", "recommendation", "algorithm", "hnsw", "ranking", "learning",
                      "exploration", "diversity", "drift", "behaviour", "behaviour_v2",
-                     "session_dynamics", "scheduling", "serving", "reward", "evaluation",
-                     "realism"});
+                     "session_dynamics", "scheduling", "serving", "evolution", "retention",
+                     "reward", "evaluation", "realism"});
     readKey(j, "simulation", c.simulation);
     readKey(j, "recommendation", c.recommendation);
     readKey(j, "algorithm", c.algorithm);
@@ -627,6 +657,8 @@ void from_json(const json &j, ExperimentConfig &c) {
     readKey(j, "session_dynamics", c.sessionDynamics);
     readKey(j, "scheduling", c.scheduling);
     readKey(j, "serving", c.serving);
+    readKey(j, "evolution", c.evolution);
+    readKey(j, "retention", c.retention);
     readKey(j, "reward", c.reward);
     readKey(j, "evaluation", c.evaluation);
     readKey(j, "realism", c.realism);
@@ -643,6 +675,16 @@ void from_json(const json &j, ExperimentConfig &c) {
     if (c.simulation.scheduler == "event_queue" && !c.realism.sessionDynamics) {
         throw std::invalid_argument(
             "simulation.scheduler='event_queue' requires realism.session_dynamics");
+    }
+    // Phase 20: the retention model reads session-end satisfaction/regret (session dynamics) and
+    // replaces the event runner's return-delay scheduler, so it needs both the session-dynamics
+    // gate and the event scheduler (D17/D20).
+    if (c.retention.enabled && !c.realism.sessionDynamics) {
+        throw std::invalid_argument("retention.enabled requires realism.session_dynamics");
+    }
+    if (c.retention.enabled && c.simulation.scheduler != "event_queue") {
+        throw std::invalid_argument(
+            "retention.enabled requires simulation.scheduler='event_queue'");
     }
     if (c.realism.contentV2 && (c.simulation.newUsers > 0 || c.simulation.newReels > 0)) {
         throw std::invalid_argument("realism.content_v2 does not support mid-simulation "

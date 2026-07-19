@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <vector>
 
 #include "rr/evaluation/experiment_runner.hpp"
 #include "rr/evaluation/run_metadata.hpp"
@@ -90,6 +92,35 @@ class ResultsWriter {
     // satisfaction_lost. A round-robin run writes no serving_metrics.csv, so its output directory
     // is byte-identical to a pre-Phase-19 run (D17).
     static void writeServingMetricsCsv(const ExperimentResult &result);
+    // Phase 20 (V2 TDD §4.15-4.17/§6, D22). Written by writeAll ONLY when a P20 gate is on
+    // (result.longTerm.configured); exposed here for targeted tests. Deterministic (fixed
+    // precision, classic locale). longterm_metrics.csv: per simulated day — day, sessions,
+    // active_users, sessions_per_active_user, mean_session_satisfaction, mean_trust,
+    // cumulative_churned, mean_pref_shift_from_initial. A gates-off run writes no
+    // longterm_metrics.csv, so its output directory is byte-identical to a pre-Phase-20 run (D17).
+    static void writeLongTermMetricsCsv(const ExperimentResult &result);
+
+    // Per-user hidden-preference export row (Phase 20, contract §5). One row per user; the writer
+    // emits them in the caller-provided order (the event runner sorts ascending user_id).
+    struct HiddenPreferenceFinalRow {
+        uint32_t userId = 0;
+        double plasticity = 0.0;     // hidden preferencePlasticity trait
+        bool churned = false;        // hidden retention.churned at run end
+        double semanticShift = 0.0;  // 1 - cos(semantic p(0), p(T))
+        double visualShift = 0.0;    // 1 - cos(visual p(0), p(T))
+        double musicShift = 0.0;     // 1 - cos(music p(0), p(T))
+        double emotionalShift = 0.0; // 1 - cos(emotional p(0), p(T))
+        std::vector<double>
+            semanticFinal; // final semantic preference components (sem_v0..sem_v{D-1})
+    };
+    // Phase 20 (contract §5, evaluation carve-out — D18-legal): the per-user counterfactual-
+    // distortion export, written ONLY under a P20 gate (the caller guards on longTerm.configured).
+    // Frozen header `user_id,plasticity,churned,sem_shift,visual_shift,music_shift,emotional_shift,
+    // sem_v0..sem_v{D-1}`. Deterministic (fixed precision, classic locale). Standalone (not part of
+    // writeAll) because it needs per-user hidden state the ExperimentResult does not carry, so the
+    // runner that owns the hidden states supplies the rows.
+    static void writeHiddenPreferenceFinalCsv(const std::filesystem::path &directory,
+                                              const std::vector<HiddenPreferenceFinalRow> &rows);
 };
 
 } // namespace rr

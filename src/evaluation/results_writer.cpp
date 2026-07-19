@@ -231,6 +231,31 @@ const char *kServingNote =
     "stream "
     "— and the digest — byte-identical to P18.";
 
+const char *kLongTermNote =
+    "Long-term metrics group (Phase 20, V2 TDD §4.15-4.17/§6, D22). Present ONLY when a P20 gate "
+    "(realism.preference_evolution || retention.enabled) is on; a run with both gates off carries "
+    "no "
+    "`long_term` block and no longterm_metrics.csv (byte-identical to a pre-Phase-20 run, D17). "
+    "retention_1d/retention_7d = fraction of users with >=1 session STARTING within 1/7 simulated "
+    "days after the end of the day containing their first session; sessions_per_user_per_day and "
+    "satisfaction_weighted_retention (sum_u retained7d_u*max(0,mean session satisfaction_u) / "
+    "sum_u "
+    "max(0,...)) summarize engagement health; churn_rate = churned users / users (churned once a "
+    "computed next-return delay exceeds retention.churn_delay_threshold_seconds); "
+    "mean_churn_probability is the model-implied churn at run end; "
+    "mean_final_trust/mean_final_habit "
+    "are population means of the hidden retention state; mean_preference_shift_from_initial = "
+    "mean_u "
+    "(1 - cos(semantic p_u(0), p_u(T))) is the WITHIN-WORLD preference drift and "
+    "mean_final_preference_entropy the interest spread. Per-day rows are in longterm_metrics.csv. "
+    "COUNTERFACTUAL-DISTORTION METHOD (the headline policy-influence number, exit criterion 1; "
+    "computed by package C's tooling, NOT in-run): run the SAME config+seed twice, once with "
+    "realism.preference_evolution=false (the counterfactual world), and take per-user distortion = "
+    "1 - cos(sem_final_on, sem_final_off) between MATCHED user rows of the two runs' "
+    "hidden_preference_final.csv. The in-run mean_preference_shift_from_initial is the "
+    "within-world "
+    "view; the cross-run distortion is the headline. All non-timing fields are deterministic.";
+
 // p50/p95/p99/mean/max/samples of a LatencyStats as a JSON object (wall-clock, D9).
 nlohmann::json latencyJson(const LatencyStats &l) {
     return nlohmann::json{{"p50", l.p50Ms},   {"p95", l.p95Ms}, {"p99", l.p99Ms},
@@ -390,10 +415,20 @@ void ResultsWriter::writeSummaryJson(const ExperimentResult &result) {
         // harmful fatigue, filled by the runner from the session-health report), so it drops out of
         // not_yet_modeled and gains a source note. Gated on sessionHealth.configured so a P15-only
         // run (latent_reactions on, session_dynamics off) is byte-identical to before (D17).
+        // harmful_fatigue goes live under session_dynamics (P16); platform_trust goes live under a
+        // P20 gate (w.trustModeled). Build not_yet_modeled in the SAME fixed order as before so a
+        // run where neither is modeled is byte-identical (D17); a modeled column drops out and
+        // gains a *_source note. The shared `note` text is intentionally left unchanged (its stale
+        // "placeholder" wording is contextualized by the source notes — the P16 precedent).
         const bool harmfulFatigueModeled = result.sessionHealth.configured;
-        const nlohmann::json notYetModeled =
-            harmfulFatigueModeled ? nlohmann::json::array({"platform_trust"})
-                                  : nlohmann::json::array({"harmful_fatigue", "platform_trust"});
+        const bool platformTrustModeled = w.trustModeled;
+        nlohmann::json notYetModeled = nlohmann::json::array();
+        if (!harmfulFatigueModeled) {
+            notYetModeled.push_back("harmful_fatigue");
+        }
+        if (!platformTrustModeled) {
+            notYetModeled.push_back("platform_trust");
+        }
         j["welfare"] = {{"impressions", w.impressions},
                         {"mean_immediate_satisfaction", w.meanSatisfaction},
                         {"mean_regret", w.meanRegret},
@@ -408,6 +443,13 @@ void ResultsWriter::writeSummaryJson(const ExperimentResult &result) {
             j["welfare"]["harmful_fatigue_source"] =
                 "Phase 16 (realism.session_dynamics): mean end-of-session harmful fatigue over "
                 "closed sessions (see the session_health block / session_health.csv) — no longer a "
+                "placeholder under this gate.";
+        }
+        if (platformTrustModeled) {
+            j["welfare"]["platform_trust_source"] =
+                "Phase 20 (P20 gate): run-end population mean of the hidden retention trust "
+                "(uninitialized trust reads the platformTrust trait); the per-day trust trajectory "
+                "is longterm_metrics.csv's mean_trust / the long_term block — no longer a "
                 "placeholder under this gate.";
         }
 
@@ -542,6 +584,28 @@ void ResultsWriter::writeSummaryJson(const ExperimentResult &result) {
                 {"median_interactions", em.medianAdaptationDelayInteractions}};
         }
         j["event_mode"]["serving"] = serving;
+    }
+
+    // Long-term metrics block (Phase 20, V2 TDD §4.15-4.17/§6, D22): PRESENT only when a P20 gate
+    // is on (realism.preference_evolution || retention.enabled), so a pre-Phase-20 / gates-off
+    // run's summary.json carries no `long_term` key (byte-identical, D17). Mirrors LongTermReport
+    // with the frozen §5 snake_case keys; the scaffold emits the struct's (zero) values so the
+    // block appears for a gate-on run, and package B fills the real numbers. Appended after
+    // event_mode so nothing above shifts.
+    if (result.longTerm.configured) {
+        const LongTermReport &lt = result.longTerm;
+        j["long_term"] = {{"retention_configured", lt.retentionConfigured},
+                          {"retention_1d", lt.retention1d},
+                          {"retention_7d", lt.retention7d},
+                          {"sessions_per_user_per_day", lt.sessionsPerUserPerDay},
+                          {"satisfaction_weighted_retention", lt.satisfactionWeightedRetention},
+                          {"churn_rate", lt.churnRate},
+                          {"mean_churn_probability", lt.meanChurnProbability},
+                          {"mean_final_trust", lt.meanFinalTrust},
+                          {"mean_final_habit", lt.meanFinalHabit},
+                          {"mean_preference_shift_from_initial", lt.meanPreferenceShiftFromInitial},
+                          {"mean_final_preference_entropy", lt.meanFinalPreferenceEntropy},
+                          {"note", kLongTermNote}};
     }
 
     j["notes"] = {{"learning", result.learningEnabled ? kLearningEnabledNote : kLearningFrozenNote},
@@ -771,6 +835,54 @@ void ResultsWriter::writeServingMetricsCsv(const ExperimentResult &result) {
     }
 }
 
+void ResultsWriter::writeLongTermMetricsCsv(const ExperimentResult &result) {
+    // Long-term metrics group, per simulated day (Phase 20, V2 TDD §4.15-4.17/§6). Written ONLY
+    // when a P20 gate is on (result.longTerm.configured). One row per simulated day: session counts
+    // + active users + mean session satisfaction + mean trust (over ALL users at day end) +
+    // cumulative churn + within-world preference shift. Deterministic (num() fixed precision,
+    // classic locale): byte-identical across same-seed runs. Under the scaffold the byDay vector is
+    // empty (package B fills it), so only the header row is written — a well-formed, deterministic
+    // file.
+    std::ofstream csv(result.directory / "longterm_metrics.csv");
+    csv << "day,sessions,active_users,sessions_per_active_user,mean_session_satisfaction,mean_"
+           "trust,"
+           "cumulative_churned,mean_pref_shift_from_initial\n";
+    for (const LongTermDayPoint &p : result.longTerm.byDay) {
+        csv << p.day << ',' << p.sessions << ',' << p.activeUsers << ','
+            << num(p.sessionsPerActiveUser) << ',' << num(p.meanSessionSatisfaction) << ','
+            << num(p.meanTrust) << ',' << p.cumulativeChurned << ','
+            << num(p.meanPreferenceShiftFromInitial) << '\n';
+    }
+}
+
+void ResultsWriter::writeHiddenPreferenceFinalCsv(
+    const std::filesystem::path &directory,
+    const std::vector<ResultsWriter::HiddenPreferenceFinalRow> &rows) {
+    // Per-user hidden-preference export (Phase 20, contract §5, evaluation carve-out — D18-legal):
+    // the per-channel preference shift vs run start (1 - cos(p(0), p(T))) + the final semantic
+    // vector, backing package C's counterfactual distortion measure. Written by the runner ONLY
+    // under a P20 gate; rows arrive in ascending user_id. Frozen header, fixed precision, classic
+    // locale — deterministic byte-for-byte across same-seed runs. The semantic-vector width D is
+    // the simulation dimensions (constant across rows); an empty rows vector still writes the fixed
+    // base header (no sem_v* columns), a well-formed file.
+    std::ofstream csv(directory / "hidden_preference_final.csv");
+    const std::size_t dims = rows.empty() ? 0 : rows.front().semanticFinal.size();
+    csv << "user_id,plasticity,churned,sem_shift,visual_shift,music_shift,emotional_shift";
+    for (std::size_t d = 0; d < dims; ++d) {
+        csv << ",sem_v" << d;
+    }
+    csv << '\n';
+    for (const HiddenPreferenceFinalRow &r : rows) {
+        csv << r.userId << ',' << num(r.plasticity) << ',' << (r.churned ? 1 : 0) << ','
+            << num(r.semanticShift) << ',' << num(r.visualShift) << ',' << num(r.musicShift) << ','
+            << num(r.emotionalShift);
+        for (const double v : r.semanticFinal) {
+            csv << ',' << num(v);
+        }
+        csv << '\n';
+    }
+}
+
 void ResultsWriter::writeAll(const ExperimentResult &result, const RunMetadata &meta) {
     writeConfigJson(result);
     writeSummaryJson(result);
@@ -806,6 +918,12 @@ void ResultsWriter::writeAll(const ExperimentResult &result, const RunMetadata &
     // every EXISTING file is byte-identical (D17).
     if (result.eventMode.configured) {
         writeServingMetricsCsv(result);
+    }
+    // Phase 20 long-term file (V2 TDD §4.15-4.17/§6): written ONLY when a P20 gate is on
+    // (result.longTerm.configured), so a pre-Phase-20 / gates-off run's output directory carries no
+    // longterm_metrics.csv and every EXISTING file is byte-identical (D17).
+    if (result.longTerm.configured) {
+        writeLongTermMetricsCsv(result);
     }
     writeMetadataJson(result.directory, meta);
 }

@@ -34,6 +34,7 @@
 #include "rr/recommendation/vector_index.hpp"
 #include "rr/simulation/dataset_generator.hpp"
 #include "rr/simulation/drift_scheduler.hpp"
+#include "rr/simulation/preference_evolution.hpp"
 #include "rr/simulation/simulator.hpp"
 
 namespace rr {
@@ -126,6 +127,16 @@ ExperimentResult ExperimentRunner::run() {
     //    byte-identical (D17).
     const bool latentReactions = config_.realism.latentReactions;
     const bool sessionDynamics = config_.realism.sessionDynamics;
+    // Phase 20 (round-robin path): exposure-driven preference evolution, gate-on only. Retention is
+    // EVENT-ONLY (retention.enabled requires scheduler='event_queue'), so the legacy loop wires
+    // just the evolution hook. Constructed only when the gate is on → gate-off makes ZERO new calls
+    // and ZERO new draws (byte-identical, D17). The scaffold PreferenceEvolution is a no-op stub
+    // that package A fills in its worktree.
+    const bool preferenceEvolution = config_.realism.preferenceEvolution;
+    std::optional<PreferenceEvolution> evolution;
+    if (preferenceEvolution) {
+        evolution.emplace(config_.evolution);
+    }
     Simulator sim =
         sessionDynamics
             ? Simulator(config_.behaviour, config_.behaviourV2, config_.sessionDynamics,
@@ -502,6 +513,16 @@ ExperimentResult ExperimentRunner::run() {
                 }
                 const StepResult &step = stepStorage;
 
+                // P20-HOOK(evolution): exposure-driven preference evolution after stepV2, gate-on
+                // only (round-robin path; retention is event-only). Draws ZERO rng. The scaffold
+                // applyImpression is a no-op → gate-off AND gate-on-stub are behaviour-identical;
+                // package A fills it. Under this gate latentReactions is on (D17 gate stack), so
+                // `latent` is the populated V2 reaction and `sim.now()` is the impression clock
+                // (D9).
+                if (preferenceEvolution) {
+                    evolution->applyImpression(ds.hiddenStates[u], reel, latent, sim.now());
+                }
+
                 // Online preference update (Phase 7): runs AFTER Simulator::step has recorded the
                 // interaction into user.recentInteractions, updating ONLY the three preference
                 // vectors (long-term / session / cached estimate). Gated by learning.enabled so the
@@ -762,6 +783,13 @@ ExperimentResult ExperimentRunner::run() {
             }
         }
     }
+
+    // Phase 20 long-term metrics gate (D22): retention is event-only (retention.enabled requires
+    // the event scheduler), so in the round-robin runner `configured` reduces to the
+    // preference_evolution gate and retentionConfigured stays false. The scaffold sets just the
+    // flag; packages A/B fill the fields. Gates-off → false → no `long_term` block /
+    // longterm_metrics.csv (byte-identical to a pre-Phase-20 run, D17).
+    result.longTerm.configured = preferenceEvolution || config_.retention.enabled;
 
     result.retrievalSampleCount = totalRetrievalSamples;
     if (totalRetrievalSamples > 0) {

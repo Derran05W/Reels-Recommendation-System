@@ -96,6 +96,31 @@ plot whose required inputs are missing across every run:
                          scripts/phase19_comparison.py's CANDIDATES table);
                          skipped for any run missing both a cost and a
                          freshness figure.
+  preference_divergence_hist.png  Phase 20 headline figure (V2 TDD §4.15-4.17,
+                         Tier-4 acceptance item 1): histogram of per-user
+                         1 - cos(sem_v_a, sem_v_b) between MATCHED user_id
+                         rows of two hidden_preference_final.csv files
+                         (contracts §5 frozen header) -- meant to be called
+                         with the engagement-on and proxy-on arms from
+                         scripts/run_phase20_experiment.sh's four-arm matrix,
+                         via --phase20 ENGAGEMENT_ON_DIR PROXY_ON_DIR. Skipped
+                         when either export is absent/unusable (expected
+                         pre-integration, or for any -off arm -- the export
+                         is gate-on only).
+  retention_by_day.png   Phase 20 retention curve (contracts §6: "per-day
+                         active share from longterm_metrics.csv"):
+                         active_users (solid) and sessions (dashed) per
+                         simulated day, one color per run, from each run's
+                         longterm_metrics.csv (contracts §5 frozen header).
+                         Uses the plain positional result-dir arguments (one
+                         run per arm); skipped per-run when longterm_metrics.csv
+                         is absent (expected for a gate-off arm or any
+                         pre-Phase-20 run) and skipped entirely when no run
+                         has one.
+  trust_trajectory.png   Phase 20 trust trajectory (contracts §6: "mean_trust
+                         by day per arm"): mean_trust per simulated day, one
+                         line per run, from longterm_metrics.csv. Same input
+                         contract as retention_by_day.png.
 
 Exit status: 0 if at least one plot was written, 1 if none were.
 """
@@ -586,6 +611,192 @@ def plot_freshness_cost_frontier(runs: list[RunData], outdir: Path,
     finish_figure(fig, ax, outdir / filename, xlabel,
                   "freshness  (adaptation delay after drift)",
                   "Batch-Depth Freshness-vs-Cost Frontier")
+    return True
+
+
+# --- Phase 20 policy-influence experiment (V2 TDD §4.15-4.17, Tier-4 acceptance item 1) --------
+#
+# These three functions are DELIBERATELY INDEPENDENT of the RunData dataclass / load_run() above
+# (this package's brief: append new Phase 20 plot functions, do not alter existing functions).
+# `hidden_preference_final.csv` (contracts §5, frozen schema) needs per-user matching between TWO
+# SPECIFIC named arms (engagement-on vs proxy-on), which does not fit RunData's "one CSV per
+# directory, one line per run" shape used by every plot above; and `longterm_metrics.csv` is a
+# Phase-20-only file RunData never reads. A tiny sibling dataclass (Phase20Run) + loader covers the
+# per-day plots without touching RunData/load_run at all -- both reuse the existing `_read_csv`/
+# `warn`/`finish_figure`/`COLOR_CYCLE` helpers (calling them, not modifying them).
+
+# Frozen hidden_preference_final.csv fixed columns (contracts §5); sem_v0..sem_v{D-1} follow and D
+# is read from the header, never assumed. Kept in sync BY HAND with
+# scripts/phase20_comparison.py's HIDDEN_PREF_REQUIRED_COLUMNS / read_hidden_preference_final --
+# same defensive contract (file presence, not a guessed key; absent/unusable is never an error).
+_PHASE20_HIDDEN_PREF_REQUIRED_COLUMNS = [
+    "user_id", "plasticity", "churned", "sem_shift", "visual_shift", "music_shift", "emotional_shift",
+]
+
+
+def _read_hidden_preference_final(path: Path) -> Optional[dict]:
+    """{user_id: [sem_v...]} from a frozen-schema hidden_preference_final.csv (contracts §5), or
+    None if the file is absent, unreadable, or missing a required/sem_v<i> column -- never raises.
+    Reuses `_read_csv` (pandas) rather than the stdlib csv module, matching this file's existing
+    pandas-based style.
+    """
+    df = _read_csv(path)
+    if df is None:
+        return None
+    missing = [c for c in _PHASE20_HIDDEN_PREF_REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        warn(f"{path}: missing required frozen column(s) {missing}; treating as absent")
+        return None
+    sem_cols = sorted(
+        (c for c in df.columns if c.startswith("sem_v") and c[len("sem_v"):].isdigit()),
+        key=lambda c: int(c[len("sem_v"):]),
+    )
+    if not sem_cols:
+        warn(f"{path}: no sem_v<i> columns found; treating as absent")
+        return None
+    rows: dict = {}
+    for _, row in df.iterrows():
+        uid = str(row["user_id"])
+        try:
+            rows[uid] = [float(row[c]) for c in sem_cols]
+        except (KeyError, ValueError):
+            continue
+    return rows if rows else None
+
+
+def _phase20_cosine(a: list, b: list) -> Optional[float]:
+    if not a or len(a) != len(b):
+        return None
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0.0 or norm_b == 0.0:
+        return None
+    return dot / (norm_a * norm_b)
+
+
+def plot_preference_divergence_hist(engagement_dir: Path, proxy_dir: Path, outdir: Path,
+                                    engagement_label: str = "engagement",
+                                    proxy_label: str = "proxy",
+                                    filename: str = "preference_divergence_hist.png") -> bool:
+    """Phase 20 headline figure (V2 TDD §4.15-4.17, Tier-4 acceptance item 1 / plan Phase 20 task
+    5): histogram of per-user 1 - cos(sem_v_engagement, sem_v_proxy) over MATCHED user_id rows of
+    two `hidden_preference_final.csv` files (contracts §5 frozen header) -- meant to be called with
+    the engagement-on and proxy-on arms from scripts/run_phase20_experiment.sh's four-arm matrix
+    (any two directories work; the labels are cosmetic). Takes EXPLICIT directory paths rather than
+    a RunData list because this plot fundamentally needs exactly two NAMED arms matched by
+    user_id, unlike every other plot in this file which overlays an arbitrary number of runs.
+    Skipped (warn) when either export is absent/unusable or there are zero matched users -- the
+    expected state pre-integration (packages A/B are no-op stubs in every worktree that can see
+    this file) and for any `-off` arm (the export is gate-on only, contracts §5).
+    """
+    eng = _read_hidden_preference_final(Path(engagement_dir) / "hidden_preference_final.csv")
+    proxy = _read_hidden_preference_final(Path(proxy_dir) / "hidden_preference_final.csv")
+    if eng is None or proxy is None:
+        warn(f"skipping {filename}: hidden_preference_final.csv missing/unusable under "
+             f"{engagement_dir} and/or {proxy_dir} (expected pre-integration or for a gate-off arm)")
+        return False
+
+    distortions = []
+    for uid in sorted(set(eng) & set(proxy)):
+        c = _phase20_cosine(eng[uid], proxy[uid])
+        if c is not None:
+            distortions.append(1.0 - c)
+    if not distortions:
+        warn(f"skipping {filename}: zero matched (and cosine-computable) user_id rows between "
+             f"{engagement_dir} and {proxy_dir}")
+        return False
+
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    ax.hist(distortions, bins=min(30, max(1, len(distortions))), color=COLOR_CYCLE[0],
+           edgecolor="white", alpha=0.9, label=f"n={len(distortions)} matched users")
+    mean_val = sum(distortions) / len(distortions)
+    ax.axvline(mean_val, color=COLOR_CYCLE[3], linestyle="--", linewidth=1.5,
+              label=f"mean = {mean_val:.4g}")
+    finish_figure(
+        fig, ax, outdir / filename,
+        f"1 - cos(semantic preference): {engagement_label} vs. {proxy_label}",
+        "matched users",
+        f"Policy-Induced Preference Divergence ({len(distortions)} matched users)",
+    )
+    return True
+
+
+@dataclass
+class Phase20Run:
+    """Minimal per-run loader for Phase 20 plots needing longterm_metrics.csv (contracts §5) --
+    deliberately separate from RunData/load_run (see the section header comment above)."""
+
+    label: str
+    directory: Path
+    color: tuple
+    longterm: Optional[pd.DataFrame]
+
+
+def _load_phase20_run(directory: Path, label: str, color: tuple) -> Phase20Run:
+    longterm = _read_csv(directory / "longterm_metrics.csv")
+    if longterm is None:
+        warn(f"{label}: longterm_metrics.csv missing or unreadable (expected for a gate-off arm "
+             f"or any pre-Phase-20 run)")
+    return Phase20Run(label, directory, color, longterm)
+
+
+def plot_retention_by_day(runs: list[Phase20Run], outdir: Path,
+                          filename: str = "retention_by_day.png") -> bool:
+    """Phase 20 retention curve (V2 TDD §4.15-4.17/§6, contracts §6: "per-day active share from
+    longterm_metrics.csv"): active_users (solid line) and sessions (dashed line) per simulated day,
+    one color per run, from longterm_metrics.csv's `day`/`active_users`/`sessions` columns
+    (contracts §5 frozen header). Skipped (warn) for any run missing a usable longterm_metrics.csv
+    -- the expected state for a gate-off arm (neither P20 gate configured) or any run predating
+    Phase 20; skipped entirely (no file written) if no run has one.
+    """
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    plotted = 0
+    for run in runs:
+        df = run.longterm
+        if df is None or "day" not in df.columns:
+            continue
+        if "active_users" in df.columns:
+            ax.plot(df["day"], df["active_users"], color=run.color, linestyle="-",
+                   label=f"{run.label} (active users)")
+            plotted += 1
+        if "sessions" in df.columns:
+            ax.plot(df["day"], df["sessions"], color=run.color, linestyle="--",
+                   label=f"{run.label} (sessions)")
+            plotted += 1
+    if plotted == 0:
+        plt.close(fig)
+        warn(f"skipping {filename}: no run has a usable longterm_metrics.csv with "
+             f"day/active_users/sessions columns")
+        return False
+    finish_figure(fig, ax, outdir / filename, "simulated day", "count",
+                 "Retention: Active Users and Sessions per Simulated Day")
+    return True
+
+
+def plot_trust_trajectory(runs: list[Phase20Run], outdir: Path,
+                          filename: str = "trust_trajectory.png") -> bool:
+    """Phase 20 trust trajectory (V2 TDD §4.15-4.17/§6, contracts §6: "trust trajectory (mean_trust
+    by day per arm)"): mean_trust per simulated day, one line per run, from longterm_metrics.csv's
+    `day`/`mean_trust` columns (contracts §5 frozen header -- mean over ALL users at day end;
+    uninitialized trust reads as the user's platformTrust trait). Skipped (warn) for any run
+    missing a usable longterm_metrics.csv.
+    """
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    plotted = 0
+    for run in runs:
+        df = run.longterm
+        if df is None or "day" not in df.columns or "mean_trust" not in df.columns:
+            continue
+        ax.plot(df["day"], df["mean_trust"], color=run.color, label=run.label)
+        plotted += 1
+    if plotted == 0:
+        plt.close(fig)
+        warn(f"skipping {filename}: no run has a usable longterm_metrics.csv with "
+             f"day/mean_trust columns")
+        return False
+    finish_figure(fig, ax, outdir / filename, "simulated day", "mean trust",
+                 "Platform Trust Trajectory by Simulated Day")
     return True
 
 
@@ -1185,6 +1396,15 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="with --canonical, comma-separated figure name(s) to (re)generate, e.g. "
              "recall_vs_efsearch,cold_start (default: all eleven)",
     )
+    parser.add_argument(
+        "--phase20", nargs=2, default=None, metavar=("ENGAGEMENT_ON_DIR", "PROXY_ON_DIR"),
+        help="Phase 20 preference-divergence histogram (V2 TDD §4.15-4.17, Tier-4 acceptance item "
+             "1): engagement-on and proxy-on result directories, each must contain "
+             "hidden_preference_final.csv (contracts §5). Independent of the positional result-dir "
+             "argument, which (when given) also drives the Phase 20 retention_by_day.png / "
+             "trust_trajectory.png plots from longterm_metrics.csv -- combine both in one call, "
+             "e.g. `plot_results.py <4 arm dirs> --phase20 <engagement-on dir> <proxy-on dir>`.",
+    )
     return parser.parse_args(argv)
 
 
@@ -1225,6 +1445,20 @@ def main(argv=None) -> int:
     written += plot_drift_recovery(runs, outdir, args.drift_at)
     written += plot_engagement_vs_welfare(runs, outdir)
     written += plot_freshness_cost_frontier(runs, outdir)
+
+    # Phase 20 additions (V2 TDD §4.15-4.17, Tier-4 acceptance item 1). Independent of the RunData
+    # list above -- see plot_preference_divergence_hist / plot_retention_by_day /
+    # plot_trust_trajectory's docstrings for why each has its own tiny loader (Phase20Run) instead
+    # of reusing RunData (this file's existing functions/dataclass are left untouched, per this
+    # package's brief). retention_by_day.png / trust_trajectory.png warn-skip cleanly (the
+    # established pattern) whenever no positional dir has a longterm_metrics.csv -- e.g. a plain
+    # Phase 7/9/... call with no Phase 20 data still runs cleanly, just without those two PNGs.
+    if args.phase20:
+        engagement_on_dir, proxy_on_dir = Path(args.phase20[0]), Path(args.phase20[1])
+        written += plot_preference_divergence_hist(engagement_on_dir, proxy_on_dir, outdir)
+    phase20_runs = [_load_phase20_run(d, label, color) for d, label, color in zip(dirs, labels, colors)]
+    written += plot_retention_by_day(phase20_runs, outdir)
+    written += plot_trust_trajectory(phase20_runs, outdir)
 
     # Phase 11 benchmark plots (retrieval_metrics.csv / load_metrics.csv). Same dirs; a dir may hold
     # simulation CSVs, benchmark CSVs, or (a parent dir) several benchmark subtrees. Each warn-skips.

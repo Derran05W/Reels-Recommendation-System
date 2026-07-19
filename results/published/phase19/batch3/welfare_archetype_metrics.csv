@@ -1,0 +1,9 @@
+archetype_index,archetype_name,impressions,exposure_share,mean_immediate_satisfaction,mean_regret
+0,genuinely_satisfying,809871,0.399330,0.233988,0.010611
+1,useful,152226,0.075059,0.206345,0.008722
+2,ragebait,98680,0.048657,-0.512880,0.471813
+3,clickbait,172848,0.085228,-0.236193,0.327731
+4,comfort,282029,0.139062,0.065710,0.012567
+5,polished_irrelevant,104297,0.051427,-0.157118,0.143681
+6,niche_treasure,211354,0.104214,0.167335,0.024164
+7,background_music,196772,0.097024,-0.012156,0.015813

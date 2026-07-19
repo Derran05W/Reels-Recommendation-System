@@ -80,6 +80,22 @@ plot whose required inputs are missing across every run:
                          under realism.latent_reactions), one labeled point
                          per run. Skipped for any run missing either value
                          (e.g. a V1/gate-off config with no `welfare` block).
+  freshness_cost_frontier.png  Phase 19 headline figure (V2 TDD §4.13 core
+                         experiment): scatter of cost (ranking computations
+                         per request -- candidates scored; falls back to
+                         summary.json counts.requests, the feed-request
+                         count, when the new instrumentation is not yet
+                         populated) vs. freshness (adaptation delay after
+                         drift), one labeled point per run -- meant to be
+                         called with one run per serving.prefetch_depth arm
+                         from scripts/run_phase19_experiment.sh's four-arm
+                         matrix. Both cost and freshness fields are Phase
+                         19's own new instrumentation (plan Phase 19 task 2)
+                         and are read by candidate summary.json key path
+                         (kept in sync by hand with
+                         scripts/phase19_comparison.py's CANDIDATES table);
+                         skipped for any run missing both a cost and a
+                         freshness figure.
 
 Exit status: 0 if at least one plot was written, 1 if none were.
 """
@@ -478,6 +494,98 @@ def plot_engagement_vs_welfare(runs: list[RunData], outdir: Path,
                   "engagement  (reward per impression)",
                   "mean hidden satisfaction",
                   "Engagement vs. Hidden Satisfaction")
+    return True
+
+
+# --- Phase 19 batch-depth frontier (V2 TDD §4.13 core experiment) ------------------------------
+#
+# Candidate summary.json (block, key) paths for the NEW cost/freshness instrumentation (plan Phase
+# 19 task 2). Package A/B's exact key names are unknown from this worktree (grepped
+# include/rr/evaluation and src/evaluation: no "ranking_computation"/"adaptation_delay" hits yet),
+# so each is read by a short candidate list (variable-depth key paths), most-specific first -- kept
+# in sync BY HAND with scripts/phase19_comparison.py's CANDIDATES table. The LANDED package-A schema
+# nests everything under `event_mode.serving.*` (src/evaluation/results_writer.cpp); those paths
+# lead each list, with the pre-merge guesses kept as fallbacks.
+_P19_COST_CANDIDATES = [
+    ("event_mode", "serving", "ranking_computations"),
+    ("event_mode", "ranking_computation_count"),
+    ("event_mode", "ranking_computations"),
+    ("serving", "ranking_computation_count"),
+    ("serving", "ranking_computations"),
+]
+_P19_FRESHNESS_CANDIDATES = [
+    ("event_mode", "serving", "adaptation_delay", "mean_interactions"),
+    ("event_mode", "adaptation_delay_interactions"),
+    ("event_mode", "adaptation_delay_seconds"),
+    ("serving", "adaptation_delay_interactions"),
+    ("serving", "adaptation_delay_seconds"),
+]
+
+
+def _first_candidate(summary: dict, candidates: list[tuple]):
+    for path in candidates:
+        value = summary
+        for key in path:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def plot_freshness_cost_frontier(runs: list[RunData], outdir: Path,
+                                 filename: str = "freshness_cost_frontier.png") -> bool:
+    """Phase 19 headline figure (V2 TDD §4.13 core experiment / plan Phase 19 task 3): the
+    batch-depth freshness-versus-cost frontier under abrupt preference drift.
+
+    x = cost, read as the new `ranking_computations` (candidates scored per request) instrumentation
+    when present, else FALLS BACK to summary.json's already-real `counts.requests` (feed-request
+    count -- a genuine, weaker cost proxy available today; see
+    scripts/phase19_comparison.py's module docstring for why request count is already meaningful
+    pre-integration). y = freshness, read as the new `adaptation_delay` instrumentation (interactions
+    or seconds to recover pre-drift satisfaction) -- no fallback, since there is no existing
+    equivalent figure to substitute (a run missing it is simply skipped, not plotted at y=0). One
+    labeled point per run: call with one RunData per serving.prefetch_depth arm from
+    scripts/run_phase19_experiment.sh's four-arm matrix (any run.label works, e.g. "batch1" /
+    "batch3" / "batch10" / "batch20" -- this function does not parse or order by depth, it only
+    plots whatever runs are passed in).
+    """
+    usable = []
+    used_cost_fallback = False
+    for run in runs:
+        if run.summary is None:
+            continue
+        cost = _first_candidate(run.summary, _P19_COST_CANDIDATES)
+        this_run_used_fallback = False
+        if cost is None:
+            requests = run.summary.get("counts", {}).get("requests")
+            if isinstance(requests, (int, float)) and not isinstance(requests, bool):
+                cost, this_run_used_fallback = requests, True
+        fresh = _first_candidate(run.summary, _P19_FRESHNESS_CANDIDATES)
+        if cost is None or fresh is None:
+            continue
+        used_cost_fallback = used_cost_fallback or this_run_used_fallback
+        usable.append((run, cost, fresh))
+
+    if not usable:
+        warn(f"skipping {filename}: no run has both a cost figure (ranking_computations or, as a "
+             f"fallback, counts.requests) and a freshness figure (adaptation_delay) in its "
+             f"summary.json -- expected until package A lands the Phase 19 instrumentation")
+        return False
+
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    for run, cost, fresh in usable:
+        ax.scatter(cost, fresh, s=110, zorder=3, color=run.color, label=run.label)
+        ax.annotate(run.label, (cost, fresh), textcoords="offset points", xytext=(8, 4), fontsize=8)
+    ax.margins(0.18)  # headroom so corner point annotations are not clipped
+    xlabel = "cost  (ranking computations -- total candidates scored over the run)"
+    if used_cost_fallback:
+        xlabel += "  [fallback: feed-request count for runs without ranking_computations]"
+    finish_figure(fig, ax, outdir / filename, xlabel,
+                  "freshness  (adaptation delay after drift)",
+                  "Batch-Depth Freshness-vs-Cost Frontier")
     return True
 
 
@@ -1116,6 +1224,7 @@ def main(argv=None) -> int:
     written += plot_cumulative_regret(runs, outdir)
     written += plot_drift_recovery(runs, outdir, args.drift_at)
     written += plot_engagement_vs_welfare(runs, outdir)
+    written += plot_freshness_cost_frontier(runs, outdir)
 
     # Phase 11 benchmark plots (retrieval_metrics.csv / load_metrics.csv). Same dirs; a dir may hold
     # simulation CSVs, benchmark CSVs, or (a parent dir) several benchmark subtrees. Each warn-skips.

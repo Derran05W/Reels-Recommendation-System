@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <vector>
 
+#include "rr/core/embedding.hpp"
 #include "rr/evaluation/experiment_runner.hpp"
 #include "rr/infrastructure/clock.hpp"
 #include "rr/infrastructure/config.hpp"
@@ -52,6 +54,46 @@ struct EventLogEntry {
 // queue-insertion order leaves the log — and therefore this digest — unchanged (order invariance).
 // Exposed for package A's digest-fold-stability unit test and package C's golden.
 uint64_t foldEventLog(const std::vector<EventLogEntry> &log);
+
+// ================================================================================================
+// Phase 19 serving-strategy PURE decision helpers (V2 §4.13). The serving logic lives inside
+// EventDrivenRunner::run(), but these three primitives are factored out as free functions so the
+// exact decision math is unit-testable in isolation (serving_strategy_test.cpp). Each is documented
+// at its definition in event_driven_runner.cpp.
+// ================================================================================================
+
+// Threshold refill (task 2): the client fires the next RequestFeed when its remaining prefetched
+// inventory has fallen to `threshold` or below AND no feed request is already in flight for the
+// user
+// (`requestPending` — the outstanding-request guard that prevents double-requesting). threshold 0
+// reproduces the Phase 18 refill-when-empty exactly (remaining 0 <= 0), so the default serving path
+// is byte-identical.
+bool servingShouldRefill(std::size_t remaining, uint32_t threshold, bool requestPending);
+
+// Observable session-intent swing (task 3): the cosine between the user's CURRENT
+// session-preference vector and the snapshot taken when the front prefetched item was RANKED.
+// Returns 1.0 ("no swing") when either vector is empty or (near) zero-norm — intent is then
+// undefined, so there is nothing to invalidate against. This is a purely OBSERVABLE signal (a real
+// client could compute it); scheduled drift is captured through the same estimate swing it
+// eventually induces (D18: the serving layer never reads hidden state).
+double intentSwingCosine(const Embedding &current, const Embedding &rankedTime);
+
+// Invalidation decision (task 3): drop the remaining feed when the intent-swing cosine has fallen
+// strictly BELOW the configured threshold. Strict `<` so a threshold of 1.0 fires on any real
+// movement yet leaves an unmoved feed (cos == 1.0) intact; preserve-downloaded (invalidation OFF)
+// is the default and never calls this.
+bool servingShouldInvalidate(double intentCosine, double threshold);
+
+// Adaptation delay after drift (task 4, P10-style but on hidden SATISFACTION and indexed by
+// per-user interactions rather than rounds): given a user's per-impression immediate-satisfaction
+// sequence and the 0-based interaction index at which their drift fired, return the number of
+// post-drift interactions until the trailing-`window` mean satisfaction first recovers to
+// `recoverFraction` of the pre-drift trailing-`window` mean. Returns -1 when there is insufficient
+// pre-drift history (driftIndex < window), no post-drift history, or recovery never occurs within
+// the sequence. Pure; exposed for direct unit testing. Window/fraction are documented named
+// constants in the runner.
+long adaptationDelayInteractions(const std::vector<double> &satisfactionSeq, std::size_t driftIndex,
+                                 std::size_t window, double recoverFraction);
 
 // Phase 18 event-driven runner (V2 TDD 4.11/4.12/4.14; D20 is the binding determinism
 // contract): users open, scroll, exit, and return on INDEPENDENT timelines over a

@@ -61,6 +61,26 @@ struct SchedulingConfig {
     bool operator==(const SchedulingConfig &) const = default;
 };
 
+// Phase 19 serving-strategy surface (V2 TDD 4.13; consumed ONLY by the event runner —
+// validated at load to require simulation.scheduler == "event_queue" when non-default). The
+// freshness-versus-cost experiment axis.
+struct ServingConfig {
+    // Ranked reels fetched per RequestFeed. 0 (default) = recommendation.feed_size (the Phase 18
+    // baseline behaviour, byte-identical).
+    uint32_t prefetchDepth = 0;
+    // Fire the next RequestFeed when the timeline's remaining prefetched inventory reaches this
+    // count (0 = refill only when empty, the Phase 18 depth-1 semantics).
+    uint32_t refillThreshold = 0;
+    // Invalidate (drop) the remaining prefetched feed on a MAJOR session-intent change:
+    // the user's session-preference vector swings beyond the cosine threshold below since the
+    // feed was ranked, or a scheduled drift event fires for the user. Default OFF: already-
+    // downloaded reels survive preference-estimate changes (the realistic client cache —
+    // "preserve downloaded", V2 4.13).
+    bool invalidateOnIntentChange = false;
+    double intentSwingCosineThreshold = 0.5;
+    bool operator==(const ServingConfig &) const = default;
+};
+
 struct RecommendationConfig {
     uint32_t feedSize = 10;
     uint32_t vectorCandidates = 500;
@@ -419,6 +439,7 @@ struct ExperimentConfig {
     BehaviourV2Config behaviourV2;
     SessionDynamicsConfig sessionDynamics;
     SchedulingConfig scheduling;
+    ServingConfig serving;
     RewardConfig reward;
     EvaluationConfig evaluation;
     RealismConfig realism;
@@ -460,6 +481,8 @@ void to_json(nlohmann::json &j, const SessionDynamicsConfig &c);
 void from_json(const nlohmann::json &j, SessionDynamicsConfig &c);
 void to_json(nlohmann::json &j, const SchedulingConfig &c);
 void from_json(const nlohmann::json &j, SchedulingConfig &c);
+void to_json(nlohmann::json &j, const ServingConfig &c);
+void from_json(const nlohmann::json &j, ServingConfig &c);
 void to_json(nlohmann::json &j, const RecommendationAlgorithm &a);
 void from_json(const nlohmann::json &j, RecommendationAlgorithm &a);
 void to_json(nlohmann::json &j, const ExperimentConfig &c);

@@ -206,6 +206,31 @@ const char *kEventModeNote =
     "processed event timestamp; return_delay stats are the baseline model's per-exit draws "
     "(max(60, gaussian(mean/baselineDailyUsage, spread)) seconds, stream 'scheduling').";
 
+const char *kServingNote =
+    "Serving strategy + cost/staleness group (Phase 19, V2 TDD §4.13, D22). Event-mode only; the "
+    "freshness-versus-cost axis. prefetch_depth is the EFFECTIVE reels ranked per feed request "
+    "(prefetch_depth 0 resolves to recommendation.feed_size); a deeper cache means fewer requests. "
+    "Requests fire from consumption: a feed is re-requested when remaining inventory <= "
+    "refill_threshold (0 = refill-when-empty, the P18 depth-1 default), preserving already-"
+    "downloaded reels (an appended cache) unless invalidate_on_intent_change drops the remainder "
+    "on "
+    "a session-intent swing (cos(current sessionPreference, ranked-time sessionPreference) < "
+    "intent_swing_cosine_threshold — a purely OBSERVABLE signal; scheduled drift is caught via the "
+    "same swing it induces, D18). ranking_computations = Σ candidatesRanked over all requests (the "
+    "COST). staleness of an impression = updater applications on that user between its feed's "
+    "ranking and its serving; stale_impression_rate = fraction with staleness>0; mean_staleness is "
+    "over all impressions. satisfaction_lost_before_refresh = Σ over stale impressions of max(0, "
+    "that-day's fresh-serving mean immediate satisfaction − the stale impression's satisfaction), "
+    "clamped >=0 (a day with no fresh impressions contributes 0). adaptation_delay (present only "
+    "when drift is configured) is P10-style but on hidden satisfaction, in per-user interactions: "
+    "for each drifted-cohort user the interactions from their drift (the scheduler's first "
+    "atInteraction) until their trailing-10 mean satisfaction recovers to 0.9x its pre-drift "
+    "trailing-10 mean; mean/median over users that recovered within the horizon (non-recoverers "
+    "counted in drifted_users, excluded from the means). Per-day rows in serving_metrics.csv. "
+    "Default serving (prefetch_depth 0, refill_threshold 0, invalidate off) leaves the event "
+    "stream "
+    "— and the digest — byte-identical to P18.";
+
 // p50/p95/p99/mean/max/samples of a LatencyStats as a JSON object (wall-clock, D9).
 nlohmann::json latencyJson(const LatencyStats &l) {
     return nlohmann::json{{"p50", l.p50Ms},   {"p95", l.p95Ms}, {"p99", l.p99Ms},
@@ -492,6 +517,31 @@ void ResultsWriter::writeSummaryJson(const ExperimentResult &result) {
                              {"median", em.returnDelayMedianSeconds},
                              {"count", em.returnCount}}},
                            {"note", kEventModeNote}};
+
+        // Phase 19 serving/cost/staleness sub-block (V2 TDD §4.13, D22 additive). Nested under
+        // event_mode; adaptation_delay is added only when drift is configured. Purely additive —
+        // the P18 keys above are untouched, and package C reads event_mode.serving.* per run.
+        nlohmann::json serving = {
+            {"prefetch_depth", em.servingPrefetchDepth},
+            {"refill_threshold", em.servingRefillThreshold},
+            {"invalidate_on_intent_change", em.servingInvalidateOnIntentChange},
+            {"feed_requests", em.feedRequestCount},
+            {"ranking_computations", em.rankingComputations},
+            {"mean_staleness", em.meanStaleness},
+            {"stale_impression_rate", em.staleImpressionRate},
+            {"stale_impressions", em.staleImpressionCount},
+            {"satisfaction_lost_before_refresh", em.satisfactionLostBeforeRefresh},
+            {"feed_invalidations", em.feedInvalidationCount},
+            {"note", kServingNote}};
+        if (em.adaptationConfigured) {
+            serving["adaptation_delay"] = {
+                {"configured", true},
+                {"drifted_users", em.adaptationDriftedUsers},
+                {"recovered_users", em.adaptationRecoveredUsers},
+                {"mean_interactions", em.meanAdaptationDelayInteractions},
+                {"median_interactions", em.medianAdaptationDelayInteractions}};
+        }
+        j["event_mode"]["serving"] = serving;
     }
 
     j["notes"] = {{"learning", result.learningEnabled ? kLearningEnabledNote : kLearningFrozenNote},
@@ -705,6 +755,22 @@ void ResultsWriter::writeSessionHealthMetricsCsv(const ExperimentResult &result)
     }
 }
 
+void ResultsWriter::writeServingMetricsCsv(const ExperimentResult &result) {
+    // Serving strategy group, per simulated day (Phase 19, V2 TDD §4.13). Written ONLY under the
+    // event scheduler. One row per day: feed requests + ranking-computation cost, plus the
+    // staleness and satisfaction-lost the freshness-versus-cost frontier plots against depth. All
+    // means/rates are over the day's impressions (0 for an empty day). Deterministic (num() fixed
+    // precision, classic locale): byte-identical across same-seed runs.
+    std::ofstream csv(result.directory / "serving_metrics.csv");
+    csv << "day,feed_requests,ranking_computations,impressions,stale_impressions,"
+           "stale_impression_rate,mean_staleness,satisfaction_lost\n";
+    for (const ServingDayPoint &p : result.eventMode.servingByDay) {
+        csv << p.day << ',' << p.feedRequests << ',' << p.rankingComputations << ','
+            << p.impressions << ',' << p.staleImpressions << ',' << num(p.staleImpressionRate)
+            << ',' << num(p.meanStaleness) << ',' << num(p.satisfactionLost) << '\n';
+    }
+}
+
 void ResultsWriter::writeAll(const ExperimentResult &result, const RunMetadata &meta) {
     writeConfigJson(result);
     writeSummaryJson(result);
@@ -734,6 +800,12 @@ void ResultsWriter::writeAll(const ExperimentResult &result, const RunMetadata &
     // EXISTING file (incl. the P15 welfare CSVs) is byte-identical (D17).
     if (result.sessionHealth.configured) {
         writeSessionHealthMetricsCsv(result);
+    }
+    // Phase 19 serving file (V2 TDD §4.13): written ONLY under the event scheduler, so a
+    // round-robin (or any pre-Phase-19) run's output directory carries no serving_metrics.csv and
+    // every EXISTING file is byte-identical (D17).
+    if (result.eventMode.configured) {
+        writeServingMetricsCsv(result);
     }
     writeMetadataJson(result.directory, meta);
 }

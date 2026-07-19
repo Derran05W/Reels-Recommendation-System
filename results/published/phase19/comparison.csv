@@ -1,0 +1,5 @@
+arm,batch_depth,feed-request count,ranking computations (candidates scored),adaptation delay after drift,satisfaction lost before refresh,stale-impression rate,mean staleness,mean hidden satisfaction (whole-run),U_s mean (session utility),impressions (context)
+batch1,1,2029230,1011607164,4.0618,0,0,0,0.0825989,-0.693249,2029230
+batch3,3,822755,409290163,4.22708,271006,0.594318,0.857162,0.0811582,-0.728209,2028077
+batch10,10,441128,219896171,4.2492,505298,0.781003,2.56382,0.0803936,-0.747542,2014313
+batch20,20,417041,207935476,4.08182,538369,0.79386,3.05089,0.0828528,-0.717478,2023100

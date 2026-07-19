@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -56,6 +57,28 @@ constexpr Timestamp kSecondsPerSimulatedDay = 86400;
 constexpr Timestamp kMinReturnDelaySeconds = 60;
 constexpr double kMinBaselineUsage = 0.25;
 
+// Phase 19 serving-strategy constants (V2 §4.13). No planned experiment varies these, so they stay
+// named constants here rather than config knobs (D24, the no-premature-config convention).
+//
+// Intent-swing refetch latency: when invalidate_on_intent_change drops a stale feed, the fresh
+// RequestFeed is scheduled 1 simulated second later (NOT at the current instant). A strictly-future
+// timestamp keeps the equal-timestamp snapshot invariant intact — the runner's within-timestamp
+// phase cascade (arrivals -> requests -> consumption) forbids spawning a phase-1 RequestFeed into
+// the CURRENT timestamp's phase-2 consumption, so the refetch lands in a later timestamp group
+// where it reads global state as of the end of this one (D20/§4.14). One second is negligible
+// simulated time and models the client noticing the swing and re-fetching on the next tick.
+constexpr Timestamp kIntentRefetchDelaySeconds = 1;
+
+// Adaptation delay after drift (task 4): trailing-window mean SATISFACTION recovery, the P10
+// adaptation idea moved onto hidden satisfaction and indexed by per-user interactions. The window
+// smooths the noisy per-impression satisfaction signal; recovery is the first post-drift
+// interaction whose trailing-window mean reaches this fraction of the pre-drift trailing-window
+// mean. 0.9 (not P10's 0.95) is chosen because per-USER satisfaction is noisier than P10's
+// cohort-mean reward, so a slightly looser bar avoids spurious "never recovered" verdicts; both are
+// documented for package C.
+constexpr std::size_t kAdaptationWindow = 10;
+constexpr double kAdaptationRecoverFraction = 0.9;
+
 // yyyymmddThhmmss experiment-id stamp (D12), identical to the legacy runner's helper. Wall-clock is
 // permitted here: it only labels the output directory for provenance and never feeds the simulation
 // (D9). Duplicated (not shared) because the legacy copy is a file-local anonymous-namespace helper.
@@ -92,6 +115,79 @@ uint64_t foldEventLog(const std::vector<EventLogEntry> &log) {
         acc = splitmix64(acc ^ e.seq);
     }
     return acc;
+}
+
+// ================================================================================================
+// Phase 19 serving-strategy pure decision helpers (V2 §4.13). Declared in the header; factored out
+// so the exact decision math is unit-testable in isolation (serving_strategy_test.cpp).
+// ================================================================================================
+
+bool servingShouldRefill(std::size_t remaining, uint32_t threshold, bool requestPending) {
+    // Fire the next feed request once the remaining prefetched inventory has fallen to `threshold`
+    // or below, unless a request is already in flight (the outstanding-request guard prevents
+    // double-requesting the same user). threshold 0 => fires only at remaining 0 (the P18
+    // refill-when-empty, byte-identical default).
+    return !requestPending && remaining <= static_cast<std::size_t>(threshold);
+}
+
+double intentSwingCosine(const Embedding &current, const Embedding &rankedTime) {
+    // Cosine between the CURRENT session-preference vector and the snapshot taken when the front
+    // prefetched item was ranked. Undefined (empty / different length / (near) zero norm on either
+    // side) => 1.0 "no swing": with no measurable intent there is nothing to invalidate against.
+    if (current.empty() || current.size() != rankedTime.size()) {
+        return 1.0;
+    }
+    double d = 0.0;
+    double nc = 0.0;
+    double nr = 0.0;
+    for (std::size_t i = 0; i < current.size(); ++i) {
+        const double a = static_cast<double>(current[i]);
+        const double b = static_cast<double>(rankedTime[i]);
+        d += a * b;
+        nc += a * a;
+        nr += b * b;
+    }
+    constexpr double kNormEps = 1e-12;
+    if (nc < kNormEps || nr < kNormEps) {
+        return 1.0;
+    }
+    return d / std::sqrt(nc * nr);
+}
+
+bool servingShouldInvalidate(double intentCosine, double threshold) {
+    // Drop the remaining feed once intent has swung strictly BELOW the threshold. Strict `<` leaves
+    // an unmoved feed (cos == 1.0) intact even at threshold 1.0.
+    return intentCosine < threshold;
+}
+
+long adaptationDelayInteractions(const std::vector<double> &satisfactionSeq, std::size_t driftIndex,
+                                 std::size_t window, double recoverFraction) {
+    // Pre-drift baseline = mean of the `window` satisfactions ending just before driftIndex; needs
+    // driftIndex >= window of history. Recovery = the first interaction k >= driftIndex whose
+    // trailing-`window` mean (satisfactions (k-window+1 .. k)) reaches recoverFraction * baseline;
+    // the returned delay is (k - driftIndex + 1) — the count of post-drift interactions consumed
+    // through recovery. -1 when history is too short, there is no post-drift interaction, or the
+    // bar is never re-crossed within the sequence.
+    if (window == 0 || driftIndex < window || driftIndex >= satisfactionSeq.size()) {
+        return -1;
+    }
+    double preSum = 0.0;
+    for (std::size_t i = driftIndex - window; i < driftIndex; ++i) {
+        preSum += satisfactionSeq[i];
+    }
+    const double preMean = preSum / static_cast<double>(window);
+    const double bar = recoverFraction * preMean;
+    for (std::size_t k = driftIndex; k < satisfactionSeq.size(); ++k) {
+        // Trailing-window mean ending at k. k >= driftIndex >= window, so k-window+1 >= 1 > 0.
+        double sum = 0.0;
+        for (std::size_t i = k + 1 - window; i <= k; ++i) {
+            sum += satisfactionSeq[i];
+        }
+        if (sum / static_cast<double>(window) >= bar) {
+            return static_cast<long>(k - driftIndex + 1);
+        }
+    }
+    return -1;
 }
 
 int eventProcessingPhase(EventType type) {
@@ -225,6 +321,17 @@ ExperimentResult EventDrivenRunner::run() {
     const std::size_t feedSize = config_.recommendation.feedSize;
     const std::size_t userCount = ds.users.size();
 
+    // Phase 19 serving strategy (V2 §4.13). `prefetchDepth` is how many ranked reels each
+    // RequestFeed lands in the deque: prefetch_depth 0 resolves to feedSize (the P18 baseline,
+    // byte-identical); a depth > feedSize simply models a DEEPER client cache (the request just
+    // asks the orchestrator for more items — candidateLimit / the O(catalog) source scans are
+    // unchanged, so the ranking COST per request barely moves; the cost axis is the NUMBER of
+    // requests, which deeper prefetch reduces). Refill threshold and invalidation are read straight
+    // off the config.
+    const ServingConfig &serving = config_.serving;
+    const std::size_t prefetchDepth =
+        serving.prefetchDepth != 0 ? static_cast<std::size_t>(serving.prefetchDepth) : feedSize;
+
     // Metric collectors, sized to numDays and constructed exactly as the legacy runner's per-round
     // collectors (so ResultsWriter serializes the four §6 groups unchanged, D22).
     MetricsCollector metrics;
@@ -255,12 +362,32 @@ ExperimentResult EventDrivenRunner::run() {
 
     // 4. Per-user timeline state (V2 §4.11) + runner-side feed context. `timelines[u]` owns the
     //    online flag, the prefetched-feed deque, and the monotone per-user seq feeding the
-    //    tie-breaker. The serving request's id/time travel from the RequestFeed handler to the
-    //    consumption handler through parallel runner vectors (so each impression's event carries
-    //    the request that served it) rather than widening the frozen UserTimeline surface.
+    //    tie-breaker. Each prefetched item carries a PARALLEL stamp (per-item, in `feedStamps[u]`,
+    //    kept in lockstep with `timelines[u].prefetchedFeed`) so the frozen UserTimeline surface is
+    //    not widened. Per-item (not per-user) is REQUIRED once preserve-downloaded threshold
+    //    refills APPEND a newer feed behind an older surviving one: the two batches were ranked at
+    //    different times, so each item must remember its own request id/serve-time and its own
+    //    staleness base.
+    struct PrefetchStamp {
+        uint64_t requestId = 0; // the RequestFeed that produced this item (== requestCount then)
+        Timestamp requestTime =
+            0; // that request's serve time (feeds StepV2Inputs.requestTimestamp)
+        uint64_t rankApplyCount = 0; // applyCount[u] when this item was ranked (the staleness base)
+        Embedding rankSessionPref;   // sessionPreference snapshot at ranking (ONLY populated when
+                                     // invalidate_on_intent_change is on; empty otherwise, so the
+                                     // preserve-downloaded default pays nothing)
+    };
     std::vector<UserTimeline> timelines(userCount);
-    std::vector<uint64_t> feedRequestId(userCount, 0);
-    std::vector<Timestamp> feedRequestTime(userCount, 0);
+    std::vector<std::deque<PrefetchStamp>> feedStamps(userCount);
+    // Per-user updater-apply counter (the staleness clock): bumped once per updater.apply.
+    // Staleness of a served impression = applyCount[u] at serving − the front stamp's
+    // rankApplyCount. With learning off there are no applies, so staleness is 0 everywhere (nothing
+    // is stale if the model never moves).
+    std::vector<uint64_t> applyCount(userCount, 0);
+    // Outstanding-request guard (avoid double-requests, task 2): true from when a RequestFeed is
+    // scheduled for a user until it is dispatched. A threshold refill only fires when this is
+    // false.
+    std::vector<bool> outstandingRequest(userCount, false);
 
     // Event-mode-only accumulators: the deterministic event log (folded into the digest), the
     // baseline return delays, and the concurrent-online occupancy samples.
@@ -269,6 +396,30 @@ ExperimentResult EventDrivenRunner::run() {
     double onlineFractionSum = 0.0;
     std::size_t occupancySamples = 0;
     std::size_t onlineNow = 0; // running count of online users (O(1) occupancy).
+
+    // Phase 19 serving/cost/staleness instrumentation (V2 §4.13, D22). Run-level totals plus a
+    // per-simulated-day breakdown for serving_metrics.csv (package C's per-day view).
+    // Fresh-vs-stale satisfaction is bucketed per day so satisfaction-lost can compare each stale
+    // impression against that day's fresh-serving mean.
+    std::uint64_t rankingComputations = 0; // Σ candidatesRanked over all feed requests (the COST)
+    std::uint64_t stalenessSum = 0;        // Σ per-impression staleness (for meanStaleness)
+    std::size_t staleImpressionCount = 0;  // impressions with staleness > 0
+    std::size_t feedInvalidationCount = 0; // intent-swing invalidations
+    struct ServingDayAcc {
+        std::size_t feedRequests = 0;
+        std::uint64_t rankingComputations = 0;
+        std::size_t impressions = 0;
+        std::size_t staleImpressions = 0;
+        std::uint64_t stalenessSum = 0;
+        double freshSatSum = 0.0; // satisfaction of THIS day's staleness-0 impressions
+        std::size_t freshSatCount = 0;
+        std::vector<double> staleSatisfactions; // per stale impression, for the clamped-gap sum
+    };
+    std::vector<ServingDayAcc> servingByDay(numDays);
+    // Per-user immediate-satisfaction sequence, collected ONLY when drift is configured (adaptation
+    // delay is drift-only). Kept empty otherwise so the default/no-drift path allocates nothing.
+    const bool driftConfigured = drift.configured();
+    std::vector<std::vector<double>> userSatSeq(driftConfigured ? userCount : 0);
 
     EventQueue queue;
 
@@ -290,6 +441,17 @@ ExperimentResult EventDrivenRunner::run() {
         ev.type = type;
         ev.perUserSeq = seq;
         queue.push(ev);
+    };
+
+    // Schedule a RequestFeed AND raise the outstanding-request flag (task 2's double-request
+    // guard). Every RequestFeed in the runner goes through here so the invariant
+    // "outstandingRequest[u] == a RequestFeed is scheduled-but-not-yet-dispatched" holds globally;
+    // the RequestFeed handler lowers it on dispatch. Emits exactly the same queued event as
+    // scheduleEvent(RequestFeed, ...), so the event log — and the digest — is unchanged for any
+    // given schedule sequence.
+    auto scheduleRequestFeed = [&](UserId uid, Timestamp time) {
+        outstandingRequest[uid.value] = true;
+        scheduleEvent(EventType::RequestFeed, uid, time);
     };
 
     // Append one row to the event log (queued events at pop time; the collapsed facets from the
@@ -332,23 +494,26 @@ ExperimentResult EventDrivenRunner::run() {
                 tl.online = true;
                 ++onlineNow;
             }
-            scheduleEvent(EventType::RequestFeed, e.userId,
-                          e.time); // fresh session at this instant
+            scheduleRequestFeed(e.userId, e.time); // fresh session at this instant
             break;
         }
 
         // RequestFeed: build the request EXACTLY like the legacy loop (requestTime = event time),
-        // rank a feed, measure it (diversity/oracle/retrieval on the SAME streams as legacy),
-        // prefetch it (depth = feedSize this phase), and open the consumption chain with a
-        // StartReel at +0 (the tie-breaker orders it after this RequestFeed within the timestamp).
+        // rank a feed of `prefetchDepth` reels (Phase 19; feedSize by default), measure it
+        // (diversity/oracle/retrieval on the SAME streams as legacy), and land it in the deque.
+        // This handler runs FIRST-within-timestamp (phase 1), so it always reads global state as of
+        // the end of the prior timestamp (the equal-timestamp snapshot, D20/§4.14).
         case EventType::RequestFeed: {
+            outstandingRequest[u] = false; // this pending request is now being served (task 2)
+            const bool wasEmpty = tl.prefetchedFeed.empty();
+
             RecommendationRequest req{};
             req.userId = user.id;
             req.sessionId = user.recentInteractions.empty()
                                 ? SessionId{0}
                                 : user.recentInteractions.back().sessionId;
-            req.feedSize = feedSize;
-            req.candidateLimit = config_.recommendation.vectorCandidates;
+            req.feedSize = prefetchDepth; // Phase 19: depth reels per request (== feedSize default)
+            req.candidateLimit = config_.recommendation.vectorCandidates; // UNCHANGED (task 1)
             req.enableExploration = config_.exploration.enabled;
             req.enableDiversity = config_.diversity.enabled;
             req.requestTime = e.time;
@@ -361,6 +526,15 @@ ExperimentResult EventDrivenRunner::run() {
             rerankingLatencies.push_back(resp.rerankingLatencyMs);
             ++requestCount;
 
+            // Cost instrumentation (task 4): candidatesRanked is the pool the orchestrator actually
+            // scored for this request. Summed across requests it is the "ranking computations" cost
+            // axis — deeper prefetch => fewer requests => lower total (the freshness-vs-cost
+            // trade).
+            rankingComputations += static_cast<std::uint64_t>(resp.candidatesRanked);
+            servingByDay[dayIdx].feedRequests += 1;
+            servingByDay[dayIdx].rankingComputations +=
+                static_cast<std::uint64_t>(resp.candidatesRanked);
+
             std::vector<ReelId> feedReelIds;
             feedReelIds.reserve(resp.reels.size());
             for (const RankedReel &ranked : resp.reels) {
@@ -372,7 +546,9 @@ ExperimentResult EventDrivenRunner::run() {
 
             // Oracle regret on a Bernoulli(oracleSampleRate) subset — same "oracle" stream/order
             // semantics as legacy (one draw per request keeps the stream aligned). seenReels is the
-            // pre-feed snapshot the oracle scores against.
+            // pre-feed snapshot the oracle scores against. `feedSize` (not depth) stays the regret
+            // top-k so the oracle baseline is depth-invariant (the DEFAULT path is byte-identical:
+            // depth == feedSize there).
             if (oracleRng.bernoulli(config_.evaluation.oracleSampleRate)) {
                 const OracleResult oracle =
                     computeOracleRegret(ds.hiddenStates[u].hiddenPreference, ds.reels,
@@ -393,12 +569,29 @@ ExperimentResult EventDrivenRunner::run() {
                 acc.distErrorSum += rs.distanceError;
             }
 
-            // Prefetch the ranked feed. A fresh request replaces any stale remainder (e.g. a feed
-            // abandoned by a mid-feed exit), so a new session always consumes a fresh feed.
-            tl.prefetchedFeed.assign(resp.reels.begin(), resp.reels.end());
-            feedRequestId[u] = static_cast<uint64_t>(requestCount);
-            feedRequestTime[u] = e.time;
-            if (!tl.prefetchedFeed.empty()) {
+            // Land the ranked feed in the deque. PRESERVE-DOWNLOADED (V2 §4.13, the default): a
+            // threshold refill APPENDS behind whatever survives, so already-downloaded reels are
+            // kept (the realistic client cache); the surviving items keep their OWN older stamps.
+            // When the deque was empty (session start, depth-1 refill, or a just-invalidated feed)
+            // append == assign, which is the byte-identical P18 behaviour. Each item gets a
+            // per-item stamp; the ranking-time sessionPreference snapshot is taken ONLY when
+            // invalidation is on.
+            const std::uint64_t rankApply = applyCount[u];
+            for (const RankedReel &ranked : resp.reels) {
+                tl.prefetchedFeed.push_back(ranked);
+                PrefetchStamp st;
+                st.requestId = static_cast<uint64_t>(requestCount);
+                st.requestTime = e.time;
+                st.rankApplyCount = rankApply;
+                if (serving.invalidateOnIntentChange) {
+                    st.rankSessionPref = user.sessionPreference;
+                }
+                feedStamps[u].push_back(std::move(st));
+            }
+            // Only OPEN a consumption chain if none is running (the deque was empty). A threshold
+            // refill that appended behind a live chain must NOT schedule a second StartReel — the
+            // in-flight chain will reach the appended reels — else the user would double-consume.
+            if (wasEmpty && !tl.prefetchedFeed.empty()) {
                 scheduleEvent(EventType::StartReel, e.userId, e.time);
             }
             break;
@@ -412,11 +605,44 @@ ExperimentResult EventDrivenRunner::run() {
             if (tl.prefetchedFeed.empty()) {
                 // Defensive: StartReel is only scheduled with a non-empty feed; if somehow empty,
                 // request a refill rather than stranding the user.
-                scheduleEvent(EventType::RequestFeed, e.userId, e.time);
+                feedStamps[u].clear();
+                scheduleRequestFeed(e.userId, e.time);
                 break;
             }
+
+            // Invalidation on major session-intent change (task 3, gated). BEFORE consuming,
+            // compare the user's CURRENT session-preference to the snapshot from when the front
+            // item was ranked; if intent has swung strictly below the cosine threshold, the
+            // downloaded feed no longer matches what the user wants, so DROP the whole remainder
+            // and re-fetch. This is the OBSERVABLE session-intent swing (a real client could
+            // compute it); scheduled drift is captured through the same swing it induces in the
+            // estimate (D18 — the serving layer never reads hidden state). Preserve-downloaded
+            // (invalidation OFF) is the default and skips this entirely. The refetch lands +1s
+            // later so it stays a strictly-future timestamp (the equal-timestamp phase cascade
+            // forbids a phase-1 request inside this phase-2 consumption; see
+            // kIntentRefetchDelaySeconds).
+            if (serving.invalidateOnIntentChange) {
+                const double swing = intentSwingCosine(user.sessionPreference,
+                                                       feedStamps[u].front().rankSessionPref);
+                if (servingShouldInvalidate(swing, serving.intentSwingCosineThreshold)) {
+                    tl.prefetchedFeed.clear();
+                    feedStamps[u].clear();
+                    ++feedInvalidationCount;
+                    if (!outstandingRequest[u]) {
+                        scheduleRequestFeed(e.userId, e.time + kIntentRefetchDelaySeconds);
+                    }
+                    break; // the stale impression is not consumed; the fresh feed will serve
+                }
+            }
+
             const RankedReel ranked = tl.prefetchedFeed.front();
+            const PrefetchStamp stamp = feedStamps[u].front();
             tl.prefetchedFeed.pop_front();
+            feedStamps[u].pop_front();
+            // Staleness (task 4): updater applies on this user since the feed was ranked, measured
+            // BEFORE this impression's own apply (its own apply must not count toward its
+            // staleness).
+            const std::uint64_t staleness = applyCount[u] - stamp.rankApplyCount;
             const ReelId reelId = ranked.reelId;
             Reel &reel = ds.reels[reelId.value];
             const Creator &creator = ds.creators[reel.creatorId.value];
@@ -434,8 +660,9 @@ ExperimentResult EventDrivenRunner::run() {
             StepV2Inputs v2;
             v2.hiddenReel = &ds.hiddenReelStates[reelId.value];
             v2.positionInFeed = static_cast<uint32_t>(ranked.rank);
-            v2.requestId = feedRequestId[u];
-            v2.requestTimestamp = feedRequestTime[u]; // the feed's serve time (<= startTimestamp).
+            v2.requestId = stamp.requestId;
+            v2.requestTimestamp =
+                stamp.requestTime; // this item's feed serve time (<= startTimestamp)
             // Provenance election, identical rule to the legacy loop: Exploration wins if present,
             // else the first (highest-priority) source; empty => the benign VectorHNSW default.
             v2.fromExploration = false;
@@ -464,9 +691,32 @@ ExperimentResult EventDrivenRunner::run() {
 
             if (learningEnabled) {
                 updater.apply(user, reel, step.event);
+                ++applyCount[u]; // the staleness clock: one apply advances this user's serving
+                                 // state
             }
             if (personalizedDiversity) {
                 toleranceEstimator.apply(user, reel, step.event);
+            }
+
+            // Serving/staleness instrumentation (task 4). staleness > 0 means the feed's ranking is
+            // out of date by that many updater applies. satisfaction-lost buckets each impression's
+            // hidden immediate satisfaction into per-day FRESH (staleness 0) vs STALE pools; the
+            // clamped fresh-minus-stale gap is summed at reduction. Adaptation delay needs the
+            // per-user satisfaction sequence, collected only under configured drift.
+            stalenessSum += staleness;
+            ServingDayAcc &sd = servingByDay[dayIdx];
+            sd.impressions += 1;
+            sd.stalenessSum += staleness;
+            if (staleness > 0) {
+                ++staleImpressionCount;
+                sd.staleImpressions += 1;
+                sd.staleSatisfactions.push_back(latent.immediateSatisfaction);
+            } else {
+                sd.freshSatSum += latent.immediateSatisfaction;
+                sd.freshSatCount += 1;
+            }
+            if (driftConfigured) {
+                userSatSeq[u].push_back(latent.immediateSatisfaction);
             }
 
             ImpressionSample s;
@@ -510,10 +760,26 @@ ExperimentResult EventDrivenRunner::run() {
                 // to legacy.
                 sessionHealth.add(dayIdx, closedRec);
                 scheduleEvent(EventType::ExitApp, e.userId, finishTs);
-            } else if (!tl.prefetchedFeed.empty()) {
-                scheduleEvent(EventType::StartReel, e.userId, nextTs);
             } else {
-                scheduleEvent(EventType::RequestFeed, e.userId, nextTs); // depth-1 refill
+                // Phase 19 unified refill/continue. Threshold refill (task 2): once the remaining
+                // prefetched inventory has fallen to refill_threshold or below (and no request is
+                // in flight), fetch the next feed at nextTs — the browse-completed swipe time,
+                // which is strictly future (dwell > 0) so it never spawns a phase-1 request inside
+                // this phase-2 consumption, and is the moment the client would act on a low buffer.
+                // refill_threshold 0 makes this fire exactly when the deque empties — the
+                // byte-identical P18 depth-1 refill (remaining 0 <= 0), scheduled at the same
+                // nextTs.
+                const std::size_t remaining = tl.prefetchedFeed.size();
+                if (servingShouldRefill(remaining, serving.refillThreshold,
+                                        outstandingRequest[u])) {
+                    scheduleRequestFeed(e.userId, nextTs);
+                }
+                // Keep consuming the downloaded feed while anything remains. When it is empty the
+                // refill just scheduled (or one already in flight) opens the next chain on landing,
+                // so no StartReel is scheduled here.
+                if (remaining > 0) {
+                    scheduleEvent(EventType::StartReel, e.userId, nextTs);
+                }
             }
             break;
         }
@@ -529,6 +795,9 @@ ExperimentResult EventDrivenRunner::run() {
                 --onlineNow;
             }
             tl.prefetchedFeed.clear(); // an exit abandons the remainder of the feed
+            feedStamps[u].clear();     // ...and its parallel stamps (kept in lockstep)
+            outstandingRequest[u] =
+                false; // clean slate: the next session re-requests from ReturnToApp
 
             // Baseline return-delay (stream "scheduling", D19). Reading the hidden
             // baselineDailyUsage trait is a documented evaluation-side read of simulation state;
@@ -805,6 +1074,97 @@ ExperimentResult EventDrivenRunner::run() {
         }
         result.eventMode.returnDelayMeanSeconds = sum / static_cast<double>(returnDelays.size());
         result.eventMode.returnDelayMedianSeconds = medianOf(returnDelays);
+    }
+
+    // Phase 19 serving / cost / staleness reduction (V2 §4.13, D22). The effective serving strategy
+    // is echoed so package C can label each frontier point; the run-level cost/staleness follow,
+    // then the per-day rows for serving_metrics.csv, then the drift-only adaptation delay.
+    result.eventMode.servingPrefetchDepth = static_cast<uint32_t>(prefetchDepth);
+    result.eventMode.servingRefillThreshold = serving.refillThreshold;
+    result.eventMode.servingInvalidateOnIntentChange = serving.invalidateOnIntentChange;
+    result.eventMode.feedRequestCount = requestCount;
+    result.eventMode.rankingComputations = rankingComputations;
+    result.eventMode.staleImpressionCount = staleImpressionCount;
+    result.eventMode.feedInvalidationCount = feedInvalidationCount;
+    if (impressionCount > 0) {
+        result.eventMode.meanStaleness =
+            static_cast<double>(stalenessSum) / static_cast<double>(impressionCount);
+        result.eventMode.staleImpressionRate =
+            static_cast<double>(staleImpressionCount) / static_cast<double>(impressionCount);
+    }
+
+    // Satisfaction lost before refresh: for each day, the fresh-serving reference is that day's
+    // mean immediate satisfaction over its staleness-0 impressions; each stale impression
+    // contributes max(0, freshMean − itsSatisfaction). A day with no fresh impressions has no
+    // reference, so its stale impressions contribute 0 (documented — nothing to compare against).
+    // Summed over days.
+    double satisfactionLost = 0.0;
+    result.eventMode.servingByDay.reserve(numDays);
+    for (std::size_t d = 0; d < numDays; ++d) {
+        const ServingDayAcc &acc = servingByDay[d];
+        double dayLost = 0.0;
+        if (acc.freshSatCount > 0) {
+            const double freshMean = acc.freshSatSum / static_cast<double>(acc.freshSatCount);
+            for (const double staleSat : acc.staleSatisfactions) {
+                dayLost += std::max(0.0, freshMean - staleSat);
+            }
+        }
+        satisfactionLost += dayLost;
+
+        ServingDayPoint pt;
+        pt.day = d;
+        pt.feedRequests = acc.feedRequests;
+        pt.rankingComputations = acc.rankingComputations;
+        pt.impressions = acc.impressions;
+        pt.staleImpressions = acc.staleImpressions;
+        pt.staleImpressionRate = acc.impressions > 0 ? static_cast<double>(acc.staleImpressions) /
+                                                           static_cast<double>(acc.impressions)
+                                                     : 0.0;
+        pt.meanStaleness = acc.impressions > 0 ? static_cast<double>(acc.stalenessSum) /
+                                                     static_cast<double>(acc.impressions)
+                                               : 0.0;
+        pt.satisfactionLost = dayLost;
+        result.eventMode.servingByDay.push_back(pt);
+    }
+    result.eventMode.satisfactionLostBeforeRefresh = satisfactionLost;
+
+    // Adaptation delay after drift (task 4, drift-only). For each drifted-cohort user with enough
+    // pre-drift history, find the interactions-until-recovery of their trailing-window mean
+    // satisfaction; aggregate mean/median over the users that recovered within the horizon. The
+    // drift interaction index is the scheduler's earliest configured atInteraction (whole-cohort,
+    // mirroring the P10 AdaptationReport anchor). Users who never recover are counted but excluded
+    // from the delay means (a right-censored "did not recover within the run", reported honestly).
+    result.eventMode.adaptationConfigured = driftConfigured;
+    if (driftConfigured) {
+        const std::size_t driftIdx = drift.firstDriftInteraction();
+        std::vector<double> recoveredDelays;
+        std::size_t driftedUsers = 0;
+        for (std::size_t uu = 0; uu < userCount; ++uu) {
+            if (!drift.everApplies(ds.users[uu].id)) {
+                continue;
+            }
+            // Needs enough pre-drift history AND a post-drift interaction to say anything.
+            if (userSatSeq[uu].size() <= driftIdx || driftIdx < kAdaptationWindow) {
+                continue;
+            }
+            ++driftedUsers;
+            const long delay = adaptationDelayInteractions(
+                userSatSeq[uu], driftIdx, kAdaptationWindow, kAdaptationRecoverFraction);
+            if (delay >= 0) {
+                recoveredDelays.push_back(static_cast<double>(delay));
+            }
+        }
+        result.eventMode.adaptationDriftedUsers = driftedUsers;
+        result.eventMode.adaptationRecoveredUsers = recoveredDelays.size();
+        if (!recoveredDelays.empty()) {
+            double s = 0.0;
+            for (const double d : recoveredDelays) {
+                s += d;
+            }
+            result.eventMode.meanAdaptationDelayInteractions =
+                s / static_cast<double>(recoveredDelays.size());
+            result.eventMode.medianAdaptationDelayInteractions = medianOf(recoveredDelays);
+        }
     }
 
     // 9. Write the §26 output layout (ResultsWriter emits the event_mode block only when

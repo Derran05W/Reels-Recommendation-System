@@ -212,6 +212,21 @@ struct AdaptationReport {
 // concurrent-online occupancy (fraction of users online, sampled once per processed event
 // timestamp), and the baseline return-delay stats. Purely additive: ResultsWriter emits an
 // `event_mode` summary block ONLY when configured, so the round-robin path is untouched.
+// One row of serving_metrics.csv (Phase 19, D22 additive): the per-simulated-day serving/cost/
+// staleness view package C plots. Written ONLY under the event scheduler; a round-robin run emits
+// no serving_metrics.csv at all (byte-identity, D17). Deterministic (fixed precision, classic
+// locale).
+struct ServingDayPoint {
+    std::size_t day = 0;
+    std::size_t feedRequests = 0;
+    std::uint64_t rankingComputations = 0;
+    std::size_t impressions = 0;
+    std::size_t staleImpressions = 0;
+    double staleImpressionRate = 0.0; // staleImpressions / impressions (0 for an empty day)
+    double meanStaleness = 0.0;       // mean over the day's impressions of applies-since-ranking
+    double satisfactionLost = 0.0; // Σ clamped (day fresh-mean satisfaction − stale satisfaction)
+};
+
 struct EventModeReport {
     bool configured = false;
     uint64_t eventLogDigest = 0;
@@ -222,6 +237,45 @@ struct EventModeReport {
     double returnDelayMeanSeconds = 0.0;
     double returnDelayMedianSeconds = 0.0;
     std::size_t returnCount = 0; // number of baseline return-delay draws (scheduled returns)
+
+    // --- Phase 19 serving / cost / staleness instrumentation (V2 §4.13, D22 additive) -----------
+    // Filled by the EventDrivenRunner alongside the P18 fields above; ALL defaults are inert, so a
+    // round-robin run (eventMode.configured == false) writes none of it and stays byte-identical
+    // (D17). With DEFAULT serving (prefetch_depth 0, refill_threshold 0, invalidate off) the
+    // numbers are still emitted, but the underlying event stream — and therefore the digest — is
+    // unchanged. These back the freshness-versus-cost frontier (package C reads them per run + per
+    // day).
+    uint32_t servingPrefetchDepth = 0; // EFFECTIVE depth ranked per RequestFeed (0-config resolved
+                                       // to recommendation.feed_size); the frontier's x-axis label
+    uint32_t servingRefillThreshold = 0; // refill when remaining <= this (0 = refill-when-empty)
+    bool servingInvalidateOnIntentChange = false;
+
+    std::size_t feedRequestCount = 0; // feed requests served (== ExperimentResult::requestCount)
+    std::uint64_t rankingComputations = 0; // Σ candidatesRanked over all feed requests (the COST)
+    double meanStaleness = 0.0;       // mean over impressions of (updater applies since ranking)
+    double staleImpressionRate = 0.0; // fraction of impressions with staleness > 0
+    std::size_t staleImpressionCount = 0;
+    // Cumulative satisfaction lost during stale serving windows: Σ over stale (staleness>0)
+    // impressions of max(0, dayFreshMeanSatisfaction − thisImpressionSatisfaction), where
+    // dayFreshMeanSatisfaction is the per-simulated-day mean immediate satisfaction of that day's
+    // staleness-0 impressions (the fresh-serving reference). >= 0 by construction; documented
+    // definition in the runner.
+    double satisfactionLostBeforeRefresh = 0.0;
+    std::size_t feedInvalidationCount = 0; // intent-swing invalidations (0 unless invalidate on)
+
+    // Adaptation delay after drift (P10-style, on satisfaction; only when config.drift is
+    // configured). `adaptationConfigured` mirrors DriftScheduler::configured(); when false the
+    // remaining fields stay 0 and the writer omits the sub-block. Delays are in per-user
+    // interactions, aggregated over the drifted cohort's users that recovered within the horizon.
+    bool adaptationConfigured = false;
+    std::size_t adaptationDriftedUsers = 0;   // drifted-cohort users with enough pre-drift history
+    std::size_t adaptationRecoveredUsers = 0; // of those, the ones that recovered within the run
+    double meanAdaptationDelayInteractions = 0.0;
+    double medianAdaptationDelayInteractions = 0.0;
+
+    // Per-simulated-day serving rows for serving_metrics.csv (package C's per-day plots). Empty for
+    // a round-robin run (no file written).
+    std::vector<ServingDayPoint> servingByDay;
 };
 
 // Everything one experiment produced, in memory. The ResultsWriter serializes it to disk; the

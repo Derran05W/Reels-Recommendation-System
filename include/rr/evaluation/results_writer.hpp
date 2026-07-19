@@ -83,6 +83,13 @@ class ResultsWriter {
     //   P16 scaffold stub the loop closes zero sessions, so every row is a well-formed zero row
     //   (the populated path lands with package A's exit model).
     static void writeSessionHealthMetricsCsv(const ExperimentResult &result);
+    // Phase 19 (V2 TDD §4.13, D22). Written by writeAll ONLY under the event scheduler
+    // (result.eventMode.configured); exposed here for targeted tests. Deterministic (fixed
+    // precision, classic locale). serving_metrics.csv: per simulated day — day, feed_requests,
+    // ranking_computations, impressions, stale_impressions, stale_impression_rate, mean_staleness,
+    // satisfaction_lost. A round-robin run writes no serving_metrics.csv, so its output directory
+    // is byte-identical to a pre-Phase-19 run (D17).
+    static void writeServingMetricsCsv(const ExperimentResult &result);
 };
 
 } // namespace rr

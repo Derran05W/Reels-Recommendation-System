@@ -570,6 +570,23 @@ void from_json(const json &j, SchedulingConfig &c) {
     readKey(j, "return_delay_spread_rel", c.returnDelaySpreadRel);
 }
 
+void to_json(json &j, const ServingConfig &c) {
+    j = json{{"prefetch_depth", c.prefetchDepth},
+             {"refill_threshold", c.refillThreshold},
+             {"invalidate_on_intent_change", c.invalidateOnIntentChange},
+             {"intent_swing_cosine_threshold", c.intentSwingCosineThreshold}};
+}
+
+void from_json(const json &j, ServingConfig &c) {
+    ensureKnownKeys(j, "serving",
+                    {"prefetch_depth", "refill_threshold", "invalidate_on_intent_change",
+                     "intent_swing_cosine_threshold"});
+    readKey(j, "prefetch_depth", c.prefetchDepth);
+    readKey(j, "refill_threshold", c.refillThreshold);
+    readKey(j, "invalidate_on_intent_change", c.invalidateOnIntentChange);
+    readKey(j, "intent_swing_cosine_threshold", c.intentSwingCosineThreshold);
+}
+
 void to_json(json &j, const ExperimentConfig &c) {
     j = json{{"simulation", c.simulation},
              {"recommendation", c.recommendation},
@@ -584,6 +601,7 @@ void to_json(json &j, const ExperimentConfig &c) {
              {"behaviour_v2", c.behaviourV2},
              {"session_dynamics", c.sessionDynamics},
              {"scheduling", c.scheduling},
+             {"serving", c.serving},
              {"reward", c.reward},
              {"evaluation", c.evaluation},
              {"realism", c.realism}};
@@ -593,7 +611,8 @@ void from_json(const json &j, ExperimentConfig &c) {
     ensureKnownKeys(j, "<top-level>",
                     {"simulation", "recommendation", "algorithm", "hnsw", "ranking", "learning",
                      "exploration", "diversity", "drift", "behaviour", "behaviour_v2",
-                     "session_dynamics", "scheduling", "reward", "evaluation", "realism"});
+                     "session_dynamics", "scheduling", "serving", "reward", "evaluation",
+                     "realism"});
     readKey(j, "simulation", c.simulation);
     readKey(j, "recommendation", c.recommendation);
     readKey(j, "algorithm", c.algorithm);
@@ -607,6 +626,7 @@ void from_json(const json &j, ExperimentConfig &c) {
     readKey(j, "behaviour_v2", c.behaviourV2);
     readKey(j, "session_dynamics", c.sessionDynamics);
     readKey(j, "scheduling", c.scheduling);
+    readKey(j, "serving", c.serving);
     readKey(j, "reward", c.reward);
     readKey(j, "evaluation", c.evaluation);
     readKey(j, "realism", c.realism);
@@ -614,6 +634,11 @@ void from_json(const json &j, ExperimentConfig &c) {
     // would need V2 augmentation of injected entities on the injection streams — unsupported
     // until a phase needs it. Fail fast at load rather than silently generating injected
     // entities with default V2 fields.
+    // Phase 19: serving strategies exist only on the event runner.
+    if (c.serving != ServingConfig{} && c.simulation.scheduler != "event_queue") {
+        throw std::invalid_argument(
+            "serving.* is event-mode only (requires simulation.scheduler='event_queue')");
+    }
     // Phase 18: the event runner schedules exits/returns against the P16 session machinery.
     if (c.simulation.scheduler == "event_queue" && !c.realism.sessionDynamics) {
         throw std::invalid_argument(

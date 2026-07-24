@@ -164,9 +164,11 @@ ctest --test-dir build-release --output-on-failure
 ```
 
 The test suite is a single `reel_rank_tests` binary (unit / integration / property / differential
-suites, distinguished by GoogleTest filters and CTest labels): **533 tests, all green** on
-macOS/AppleClang and Ubuntu/GCC (Debug and Release, verified in CI). Performance benchmarks are
-separate executables under `apps/` and are never run by `ctest` (design decision D7).
+suites, distinguished by GoogleTest filters and CTest labels): **961 tests, all green** on
+macOS/AppleClang and Ubuntu/GCC (Debug and Release, verified in CI) — 533 at the V1 milestone,
+grown through Realism V2 (Phases 13–23). Performance benchmarks are separate executables under
+`apps/` and are never run by `ctest` (design decision D7). Note: the ctest registration reglobs
+at BUILD time — run `cmake --build build` before `ctest` for an accurate count.
 
 Point at a non-default vector-db checkout:
 
@@ -455,27 +457,141 @@ design doing exactly what it promises.
 
 ---
 
+## Realism V2 (Phases 13–23)
+
+V1 (above) demonstrates the retrieval/ranking/learning/diversity machinery on a world where
+engagement *is* the ground truth. **Realism V2** breaks that equivalence: it adds a hidden
+satisfaction model distinct from observable engagement, session dynamics with a probabilistic exit,
+an event-driven simulation core with independent per-user timelines, exposure-driven preference
+evolution and retention/churn, a seven-scenario ecosystem failure-mode suite, and — finally — a
+ranker *learned* from a leak-proof observable training log rather than hand-tuned. Every V2
+mechanism ships behind a config gate that **defaults off and reproduces V1 byte-for-byte** (decision
+D17, checked every phase against a committed golden baseline); V1's 533-test baseline and every V1
+number above is unaffected. Full story: [`docs/RESULTS-V2.md`](docs/RESULTS-V2.md).
+
+**What's new, by mechanism:**
+
+- **Satisfaction ≢ engagement** (Phases 13–15): reels gain independent modality/content factors
+  (visual, music, emotional, usefulness, humour, controversy, clickbait strength, ...) and users gain
+  a hidden `LatentReaction` (satisfaction, regret, informational/emotional value) that is *sampled
+  into* observable behaviour rather than equal to it — ragebait can win engagement while losing
+  satisfaction; useful content can win satisfaction on modest engagement.
+- **Session health** (Phase 16–17): sessions gain hidden fatigue and a probabilistic, five-way
+  classified exit (failure / satisfied / fatigue / external / regret) instead of a fixed length, plus
+  a personalized diversity re-ranker driven by an observables-only tolerance estimate.
+- **Event-driven core** (Phase 18–19): an optional deterministic event-driven runner replaces
+  round-robin batches with independent per-user open/consume/exit/return timelines and a
+  configurable feed-prefetch depth (the freshness-vs-cost axis).
+- **Long-term effects** (Phase 20–21): recommendations can measurably reshape hidden preferences and
+  future retention/churn; a seven-scenario ecosystem suite (filter bubbles, ragebait amplification,
+  popularity feedback, niche starvation, creator overconcentration, exploration recovery,
+  satisfaction-vs-retention) stress-tests classic recommender failure modes with pre-registered
+  hypotheses.
+- **Learned ranking** (Phase 22–23): a leak-proof eligibility→impression training log + in-house
+  deterministic learners, closing the loop with a `LearnedRanker` retrained in-simulation that serves
+  a multi-objective value function over the learned models.
+
+### Config-gate map
+
+All V2 config lives in the `realism`, `serving`, `evolution`, `retention`, and `learning_v2` JSON
+blocks (see [`include/rr/infrastructure/config.hpp`](include/rr/infrastructure/config.hpp) for every
+field). Every boolean below defaults to **`false`** / `"round_robin"`; gates that require an earlier
+gate throw at config load if it's missing (fail-fast).
+
+| Gate | Default | Requires | Turns on |
+|---|---|---|---|
+| `realism.content_v2` | `false` | — | Multi-factor `Reel` / `HiddenUserState`: modality embeddings, content scalars, the eight-archetype catalog (Phase 13) |
+| `realism.latent_reactions` | `false` | `content_v2` | Hidden `LatentReaction` per impression + `BehaviourModelV2` — the engagement≢satisfaction mechanics (Phase 14) |
+| `realism.session_dynamics` | `false` | `latent_reactions` | Hidden per-session fatigue + the probabilistic five-way classified exit + session utility U_s (Phase 16) |
+| `realism.personalized_diversity` | `false` | `session_dynamics` | Observables-only `ToleranceEstimator` + per-user diversity caps / MMR-λ (Phase 17) |
+| `simulation.scheduler` | `"round_robin"` | `session_dynamics` (to set `"event_queue"`) | `"event_queue"` switches to the deterministic event-driven runner (independent per-user timelines, Phase 18); `"round_robin"` is the permanent D17 golden path |
+| `simulation.horizon_seconds` | `0.0` | `scheduler="event_queue"` | Simulated-seconds horizon (required `> 0` in event mode; ignored under round-robin) |
+| `serving.prefetch_depth` / `refill_threshold` / `invalidate_on_intent_change` | `0` / `0` / `false` | `event_queue` | Feed-prefetch depth, threshold refill, and intent-swing invalidation — the freshness-vs-cost axis (Phase 19) |
+| `realism.preference_evolution` | `false` | `session_dynamics` | Exposure-driven hidden-preference reinforcement/saturation, driven by hidden satisfaction, never reward (Phase 20) |
+| `retention.enabled` | `false` | `session_dynamics` + `event_queue` | Hazard-based return-delay/churn model + trust/habit (Phase 20) |
+| `evaluation.ecosystem_metrics` | `false` | `event_queue` | Per-simulated-day creator HHI / archetype exposure shares / niche match rate (Phase 21) |
+| `learning_v2.training_log` | `false` | `event_queue` | Leak-proof eligibility→impression logging pipeline + emitted-file purity audit (Phase 22) |
+| `learning_v2.survey.enabled` | `false` | `event_queue` (validated directly; used alongside `training_log` in practice) | The sanctioned noisy explicit-satisfaction survey — the only hidden-derived training signal (Phase 22) |
+| `learning_v2.learned_ranker` | `false` | `training_log` | In-loop-retrained `LearnedRanker` serving the multi-objective value function over the Phase 22 models (Phase 23) |
+
+**The D17 golden guarantee.** With every gate above off, V2 output is **byte-identical** to V1: the
+same `configs/small.json` run and the Phase 10 drift arm are captured once as a committed reference
+under [`tests/golden/v1-baseline/`](tests/golden/v1-baseline/), and every phase's exit criteria
+require a gates-off re-run to reproduce that reference exactly (deterministic CSVs byte-for-byte,
+`summary.json` non-timing fields bit-equal) — verified at every V2 phase through Phase 23. The
+event-driven runner has its own equivalent: a committed event-log digest golden under
+[`tests/golden/event-digest/`](tests/golden/event-digest/) pins the same-seed event sequence.
+
+### Event-mode quickstart
+
+A real, runnable command using the pinned tiny full-gate event-mode fixture (200 users, 2,000 reels,
+6 simulated hours — the same config the D20 determinism golden reproduces, digest
+`1533553118870293663` over 5,602 events) — completes in a few seconds:
+
+```sh
+# add -DREELRANK_VDB_DIR=/abs/path/to/vector-db if vector-db is not at ../vector-db
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release && cmake --build build-release
+./build-release/apps/simulate \
+    --config tests/golden/event-digest/config.json \
+    --seed 42 \
+    --out results/v2-quickstart
+```
+
+The config already sets `algorithm: hnsw_ranker`, `simulation.scheduler: event_queue`, and the full
+`content_v2` + `latent_reactions` + `session_dynamics` gate stack, so no extra flags are needed. For
+a full medium-scale V2 experiment (10k users × 100k reels, event mode, 9 simulated days), see any
+`results/published/phase20/*/config.json` and feed it back to `simulate` the same way V1's
+[reproducing-results](#reproducing-results) section shows.
+
+For the same-user, same-seed **engagement-vs-satisfaction two-worlds demo** (side-by-side reward,
+completion, hidden satisfaction, regret, and session-health under two ranking-weight presets, under
+2 minutes wall-clock), see [`scripts/demo_v2.sh`](scripts/demo_v2.sh).
+
+### V2 documentation
+
+| Doc | What's in it |
+|---|---|
+| [`docs/RESULTS-V2.md`](docs/RESULTS-V2.md) | The V2 §10 completion-audit evidence table (ten items, each with test names + published numbers) and the full experiment narrative, Phases 15–23 |
+| [`results/published/phase21/ECOSYSTEM.md`](results/published/phase21/ECOSYSTEM.md) | The seven-scenario ecosystem failure-mode verdicts, pre-registered hypotheses included |
+| [`results/published/figures-v2/`](results/published/figures-v2/) | The canonical V2 figure set, regenerated deterministically from published CSVs |
+| [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) | V1 limitations plus the "V2 additions" section (same three-way honesty classification) |
+| [`docs/design/`](docs/design/) | V1 *and* V2 design artifacts — both TDDs, both design-decision sets (D1–D16, D17–D25), all phase plans, and the phase-by-phase history |
+
+---
+
 ## Documentation
 
 - [`docs/RESULTS.md`](docs/RESULTS.md) — the core engineering question answered with numbers; every
   secondary question with a pointer to its experiment.
-- [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) — honest gaps, un-hit targets, deferred stretch goals.
-- [`docs/RESUME.md`](docs/RESUME.md) — the portfolio narrative, kept accurate to what was measured.
-- [`docs/design/`](docs/design/) — the pre-implementation design artifacts: the technical design
-  document, the 16 binding design decisions, the 13 session-sized phase plans, and the
-  phase-by-phase history with every deviation and known issue.
+- [`docs/RESULTS-V2.md`](docs/RESULTS-V2.md) — the Realism V2 story: the §10 completion-audit
+  evidence table plus the engagement-vs-satisfaction, session-health, event-driven/batch-frontier,
+  retention, ecosystem, and learned-ranking results (Phases 13–23). See also
+  [`results/published/phase21/ECOSYSTEM.md`](results/published/phase21/ECOSYSTEM.md) (the
+  seven-scenario failure-mode verdicts) and [`results/published/figures-v2/`](results/published/figures-v2/).
+- [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) — honest gaps, un-hit targets, deferred stretch goals
+  (V1), plus a "V2 additions" section for the realism upgrade.
+- [`docs/RESUME.md`](docs/RESUME.md) — the portfolio narrative, kept accurate to what was measured
+  (V1 and V2).
+- [`docs/design/`](docs/design/) — the pre-implementation design artifacts for **both** V1 and V2:
+  both technical design documents, both design-decision sets (D1–D16, D17–D25), all session-sized
+  phase plans, and the phase-by-phase history with every deviation and known issue.
 
 ## Layout
 
 - `include/rr/`, `src/` — headers and implementations (namespace `rr`); `src/vindex/` holds the only
   translation units that see vector-db symbols
-- `configs/` — `small`, `medium`, `large`, `benchmark`, `phase8-coldstart`, `phase10-drift` (JSON)
+- `configs/` — `small`, `medium`, `large`, `benchmark`, `phase8-coldstart`, `phase10-drift` (V1,
+  JSON); `realism-small`/`realism-medium*` and `scenarios/` (V2 realism + ecosystem-scenario configs)
 - `apps/` — `simulate`, `inspect_user`, `benchmark_retrieval`, `benchmark_recommender`,
-  `concurrency_check`
-- `tests/` — `unit`, `integration`, `property`, `differential` (one `reel_rank_tests` binary)
-- `scripts/` — Python (uv) analysis + plotting tooling and `demo.sh`
-- `docs/` — `RESULTS.md`, `LIMITATIONS.md`, `RESUME.md`, and `design/` (TDD, design decisions,
-  phase plans, phase history)
-- `results/published/` — curated, committed benchmark reports and `figures/` (rest of `results/` is
-  gitignored)
+  `concurrency_check`, `train_models` (V2 offline learners)
+- `tests/` — `unit`, `integration`, `property`, `differential` (one `reel_rank_tests` binary), and
+  `golden/` (`v1-baseline/` — the D17 gates-off reference; `event-digest/` — the D20 event-log digest)
+- `scripts/` — Python (uv) analysis + plotting tooling, `demo.sh` (V1) / `demo_v2.sh` (V2
+  engagement-vs-satisfaction two-worlds demo), and the `phaseNN_comparison.py` / `phase21_scenarios.py`
+  V2 report generators
+- `docs/` — `RESULTS.md` / `RESULTS-V2.md`, `LIMITATIONS.md`, `RESUME.md`, `scenarios/` (V2
+  ecosystem-scenario run notes), and `design/` (both TDDs, both design-decision sets, phase plans,
+  phase history)
+- `results/published/` — curated, committed benchmark reports, `figures/` (V1) and `figures-v2/`
+  (V2), plus per-scenario ecosystem results under `phase21/` (rest of `results/` is gitignored)
 - `cmake/` — `vendor_vector_db.cmake` (the vector-db shadow build)

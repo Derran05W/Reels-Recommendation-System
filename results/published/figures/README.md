@@ -12,6 +12,11 @@ that is not already committed under `results/published/`.
 cd scripts && UV_PYTHON=3.12 python3 -m uv run plot_results.py --canonical
 ```
 
+(uv-free fallback: `python3 scripts/plot_results.py --canonical` with any matplotlib ≥3.9 —
+renders are pixel-identical across nearby matplotlib versions; only the PNG `Software` metadata
+chunk differs from the committed files, which embed the pinned 3.9.2. Verified by the Phase 24
+clean-clone audit.)
+
 That writes all eleven PNGs into `results/published/figures/`. To regenerate one figure, add
 `--only <name>` (the name is the filename without `.png`), e.g.
 `--only recall_vs_efsearch,cold_start`.

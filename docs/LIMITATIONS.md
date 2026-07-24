@@ -152,3 +152,151 @@ adapter over it would let ReelRank report the approximate-vs-approximate trade-o
 - The Phase 5 `exact_vector` run's latency `mean`/`max` are contaminated by a mid-run machine sleep
   (documented in its `comparison.md`); its p50/p95/p99 percentiles over 200k samples are robust and
   are what this project quotes.
+
+---
+
+## V2 additions (Realism Upgrade, Phases 13–24)
+
+Honest accounting for the realism upgrade (V2 TDD, `docs/design/TECHNICAL-DESIGN-V2.md`), in the
+same three-way classification as above. Every item is traceable to a per-phase entry in
+[`docs/design/PHASE-HISTORY-V2.md`](design/PHASE-HISTORY-V2.md) (condensed from the planning repo's
+`commit.md`, Phases 13–23) and to the published results it concerns; see
+[`RESULTS-V2.md`](RESULTS-V2.md) for the numbers these caveats attach to. Nothing here rewrites the
+V1 sections above — V1's limitations, non-goals, and future work all still apply unchanged.
+
+### Limitations of the V2 study
+
+**The Phase-20 trust-floor operating point.** At the shipped erosion/recovery constants (erode
+0.08–0.10 on regret/negative satisfaction vs. recover 0.02 on positive), roughly a week of simulated
+exposure under *either* ranking policy drives mean platform trust to ~0.01–0.03 regardless of policy
+— trust separates only weakly between arms at this horizon (P20: 0.018 engagement vs 0.024 proxy;
+P21's ragebait scenario: 0.022 vs 0.025; P23: 0.012–0.025 across nine arms). This is not a defect —
+retention, churn, sessions/day, and welfare carry the policy separation cleanly instead — but trust
+itself is not currently a discriminating axis. Recorded as a known issue at P20, and carried,
+unresolved, through P21 and P23.
+
+**`retention_7d` saturates at the Phase-23 nine-day horizon.** Across all nine Phase 23 closed-loop
+arms, `retention_7d` sits at 0.994 regardless of ranking policy or weight vector — the frontier's
+retention axis is carried by `sessions_per_user_per_day` and welfare metrics instead. A
+discriminating retention frontier would need either a harsher churn threshold or a longer simulated
+horizon than nine days.
+
+**`ecosystem.creator_hhi_final_day` has a day-9 boundary-row artifact.** The Phase 21 suite's 9-day
+horizon is an exact multiple of 86,400 s, so it leaves a near-empty final-day row; reading
+`creator_hhi_final_day` literally makes both `creator_overconcentration` arms tie at 1.0 (noise, not
+a real result). All Phase 21 published analyses use day-8 (last full day) or whole-run aggregates
+instead — the field itself is not fixed.
+
+**Preference entropy is not a usable filter-bubble signal at the Phase 20/21 operating point.**
+`mean_preference_entropy` *rises* in every Phase 21 scenario arm, including the deliberately
+bubble-inducing ones — Phase-20 saturation/aversion push users off exhausted channels faster than
+any ranking policy narrows their exposure. Concentration verdicts in `ECOSYSTEM.md` are read from
+exposure shares (niche/tail/creator HHI) instead of entropy; this is documented per-scenario, not
+silently substituted.
+
+**A genuine satisfaction-vs-retention trade-off was not found, honestly.** Phase 21's dedicated
+scenario pre-registered a conflict hypothesis and found the opposite: retention and welfare co-move
+(Kendall τ=+0.80) across the full engagement↔proxy weight sweep, and pure engagement is *dominated*,
+not merely different. Phase 23 reproduces the same dominance-not-trade-off shape under learned
+ranking. V2 §10 item 7's literal claim ("ranking policy changes long-term satisfaction and
+retention") is demonstrated regardless — see [`RESULTS-V2.md`](RESULTS-V2.md) — but the *specific*
+engagement-vs-retention conflict several TDD passages anticipate does not appear in this simulator at
+these operating points. Mechanism: Phase 20's retention model is satisfaction/trust-driven by
+construction, so there is no return pathway independent of welfare for a harmful policy to exploit
+(see "Future work" below).
+
+**Two Phase 22/23 learned targets show no learnable signal at the shipped operating point.**
+`followed` (a ~1.5%-base-rate rare event) and `watch_ratio` (the frequency baselines already capture
+nearly all of the offline-measurable signal) do not beat their baselines by a meaningful margin in
+either the temporal or user-disjoint split. Reported plainly in `phase22/offline_eval.md` and carried
+into `phase23/gap_analysis.md`'s divergence discussion rather than omitted or averaged away.
+`served_score` (the hand-tuned ranking score used as a naive predictor) is anti-predictive
+(AUC 0.39–0.43) on several welfare-adjacent targets — evidence that a ranking score is not a general
+outcome predictor, not a bug in the baseline.
+
+**Legacy-runner session-duration semantics (Phase 16).** Phase 16's published session-health numbers
+predate the Phase 18 event-driven runner, so "time before exit" spans the *shared* round-robin
+clock — absolute durations (e.g. ~1.4×10⁵ s) are not wall-clock-realistic, and away-gaps between a
+user's sessions are artifacts of round-robin interleaving, not real per-user timelines. Cross-arm
+comparisons within Phase 16 remain sound (all arms share the same clock artifact); real per-user
+timelines only arrive with the event-driven runner from Phase 18 onward (Phases 19–23 all use it).
+
+**Personalization's sign is scale-dependent (Phase 17).** The first Phase 17 integration run showed
+personalized diversity *losing* on U_s for two of four cohorts at medium scale despite passing a
+reduced-scale acceptance test; recalibrating the ranking-side repetition-penalty multiplier and the
+personalized-cap floor flipped every cohort positive (the published result). This is an honest
+engineering finding — personalization interventions can be scale-dependent — and the shipped
+constants are calibrated at medium scale only; behaviour at other scales is untested.
+
+**V2 ranked arms cost materially more wall-clock than semantic-only arms (Phase 15).** Ranked V2 arms
+ran ~4× slower than the semantic-similarity arm per 2M-impression run (556 s vs 146 s) — V2 feature
+extraction over 500-candidate pools. Immaterial to any published *quality* number (all are
+deterministic and clock-free), but relevant to anyone re-running or extending the experiment matrix.
+
+**Reproducibility gotcha: stale ctest registration.** Running `ctest` without a fresh `cmake --build`
+first can invoke a stale, smaller test count (observed 951 of 961 registered tests at Phase 23,
+since `CONFIGURE_DEPENDS` reglobs new test files at *build* time, not at `ctest` invocation time).
+Always rebuild before trusting a final test count; this is a build-tooling caveat, not a test-content
+issue.
+
+### Deliberate non-goals (V2, by design)
+
+- **No GBT or neural rankers/learners (D21).** Tier 5 ships in-house deterministic logistic and
+  linear regression only, exactly as V1 shipped a transparent linear ranker rather than a neural one
+  (V1's own non-goal, above). Gradient-boosted trees and small neural models are an explicitly
+  *conditional* stretch (D21: "only after the linear baselines are published, and only if
+  implementable in-house or via a trivially-vendorable header-only library") — never attempted, since
+  the linear baselines already cleared their acceptance bar (Phase 22).
+- **No modality-specific ANN retrieval.** The Phase 13 modality embeddings (visual, music, emotional)
+  are ranker/behaviour features only; only `semanticEmbedding` is ever indexed in HNSW, unchanged
+  from V1 (decision D23, itself adopting V2 TDD §8's explicit recommendation). D23 leaves a designed
+  extension path open — additional `HNSWVectorIndex` instances via the existing adapter, no
+  shared-schema changes needed — but no V2 experiment ever demonstrated a measured limitation that
+  would justify using it.
+- **No off-policy correction / counterfactual estimators over the training log (Phase 23 scope).**
+  The log already carries what such estimators would need (positions, exploration probability,
+  eligibility — V2 §4.22); building the estimators themselves was explicitly out of Phase 23's scope.
+- **No compulsive-return / habit-independent-of-welfare mechanics.** The retention model (Phase 20)
+  is satisfaction- and trust-driven by construction; this is a deliberate modeling choice (return
+  probability should track welfare, not defy it) that also happens to be *why* Phase 21's
+  satisfaction-vs-retention scenario found dominance instead of a trade-off (see above).
+- Every V1 non-goal (no service split, no external infra, no Thompson sampling, no real media,
+  vector-db consumed read-only) continues to apply unchanged through V2 — vector-db in particular was
+  never touched in Phases 13–23 (D23; see `RESULTS-V2.md` §10 item 10 for the byte-identical
+  `vector_db_sha` evidence across every V2 phase's `metadata.json`).
+
+### Future work with a designed fix (V2)
+
+**Position-bias correction over the training log.** V2 §4.22 logs eligibility, retrieval, ranking,
+position, and exploration probability specifically so that a future study can build inverse-propensity
+or doubly-robust estimators over it; Phase 22 logs the data but no correction estimator was built.
+The enabling data already exists (`training_log/{candidates,requests}.csv`); only the estimator is
+missing.
+
+**Clustered-1M recall and LSH-vs-HNSW comparison (carried unchanged from V1).** Both V1 gaps (the
+clustered-1M recall cell was never run; no LSH baseline exists) remain exactly as documented in the
+V1 section above — V2 deliberately never touched retrieval or ran new retrieval benchmarks (vector-db
+stayed frozen throughout, D23), so there was no opportunity to close either gap during the realism
+upgrade. Still open.
+
+**Trust as a discriminating axis.** If a later phase wants platform trust to separate policies
+meaningfully (rather than saturating near-floor under every policy, above), the designed fix is to
+rebalance the erosion/recovery constants in `retention_model.cpp` or shorten the simulated exposure
+window — both flagged at the constants' definitions since Phase 20.
+
+**`ecosystem.creator_hhi_final_day`'s boundary-row artifact.** Designed fix (small, deferred since
+Phase 21): define "final day" as the last day with a non-trivial impression count rather than the
+literal last row, so a horizon that happens to be an exact multiple of 86,400 s does not produce a
+near-empty, noisy reading.
+
+**A genuine satisfaction-vs-retention trade-off would need satisfaction-decoupled return mechanics.**
+Identified at Phase 21 and reproduced at Phase 23: a compulsive-habit-style return pathway
+independent of welfare is the designed *direction* of the fix, though the specific mechanism is not
+yet specified — recorded as a real gap, not a defect, since the current retention model's
+welfare-coupling is itself a deliberate design choice (above).
+
+**Matrix-script `--train` resolver hardening (Phase 23).** The experiment-matrix script's directory
+resolver failed to parse resolved run directories from block-buffered arm logs for the seven learned
+arms (the runs themselves were unaffected; the integrator ran the offline re-evaluations directly).
+Flagged as a known issue, not worth a dedicated fix commit at the time — the printed commands remain
+correct manually.

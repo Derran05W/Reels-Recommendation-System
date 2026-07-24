@@ -62,10 +62,10 @@ directory:
 - **small**: `build-release/apps/simulate --config configs/small.json --algorithm hnsw_ranker_diversity --out <tmp>`
 - **drift-medium**: `build-release/apps/simulate --config configs/phase10-drift.json --algorithm hnsw_ranker --out <tmp>`
 
-Each is a single-threaded Release run (D13); expect roughly 6 minutes per arm on this machine
-(the drift-medium arm is the Phase 10 10k-user/100k-reel/20-round drift scenario, materially
-larger than the small 1k-user/10k-reel/5-round arm). `scripts/check_golden.py` prints a note
-before launching either one.
+Each is a single-threaded Release run (D13). Measured costs on this machine (Phase 24 audit):
+the small arm takes ~4 seconds; the drift-medium arm (the Phase 10 10k-user/100k-reel/20-round
+drift scenario) takes ~6–7 minutes solo — run goldens without concurrent experiment load.
+`scripts/check_golden.py` prints a note before launching either one.
 
 ### The drift-medium `metadata.json` "dirty" quirk
 
